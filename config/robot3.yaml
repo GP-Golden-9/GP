@@ -20,5 +20,5 @@ zmq:
   video: 0
 
 gas:
-  alarm_threshold: 1500      # MQ-5 raw ADC value that latches the local buzzer
-  warn_threshold: 800
+  alarm_threshold: 3000      # MQ-5 raw ADC — matches firmware (field-tuned)
+  clear_threshold: 2000      # hysteresis; alarm also latches >= 10 s
