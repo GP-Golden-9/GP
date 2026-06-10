@@ -54,6 +54,9 @@ class RobotLink(QObject):
         self.legacy_video_port = legacy_video_port
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # Own context so multiple RobotLinks and their reconnect cycles
+        # don't compete for the singleton I/O thread.
+        self._ctx = zmq.Context(io_threads=2)
 
     def start(self) -> None:
         self._stop.clear()
@@ -65,9 +68,10 @@ class RobotLink(QObject):
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=2.0)
+        self._ctx.term()
 
     def _loop(self) -> None:
-        ctx = zmq.Context.instance()
+        ctx = self._ctx
 
         def sub(port: int, conflate: bool) -> zmq.Socket | None:
             if not port:
@@ -146,6 +150,9 @@ class CommandClient(QObject):
         self._seq = 0
         self._thread: threading.Thread | None = None
         self._link_up: bool | None = None
+        # Own context so RobotLink's high-throughput SUB sockets
+        # (video 20fps + tele 20Hz) don't starve our DEALER I/O thread.
+        self._ctx = zmq.Context(io_threads=2)
 
     # ── UI-thread API ─────────────────────────────────────────────────────
     def send(self, cmd_type: str, payload: dict) -> str:
@@ -175,11 +182,11 @@ class CommandClient(QObject):
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=2.0)
+        self._ctx.term()
 
     # ── worker thread ─────────────────────────────────────────────────────
     def _loop(self) -> None:
-        ctx = zmq.Context.instance()
-        sock = ctx.socket(zmq.DEALER)
+        sock = self._ctx.socket(zmq.DEALER)
         _tune(sock)
         sock.connect(f'tcp://{self.host}:{self.port}')
 
