@@ -26,9 +26,10 @@ class LogConsole(QPlainTextEdit):
         text = f'[{stamp}] {line}'
         upper = line.upper()
         fmt = QTextCharFormat()
-        if any(k in upper for k in ('ERR', 'FAIL', 'ESTOP', 'EMERGENCY', 'DEADMAN')):
+        if any(k in upper for k in ('ERR', 'FAIL', 'ESTOP', 'EMERGENCY', 'DEADMAN',
+                                    'FIRE', 'GAS', 'ALERT')):
             fmt.setForeground(QColor('#f87171'))
-        elif any(k in upper for k in ('WARN', 'STALL', 'RETRY', 'TIMEOUT')):
+        elif any(k in upper for k in ('WARN', 'STALL', 'RETRY', 'TIMEOUT', 'DRILL')):
             fmt.setForeground(QColor('#facc15'))
         elif source == 'local':
             fmt.setForeground(QColor('#93c5fd'))

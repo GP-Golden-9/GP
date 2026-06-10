@@ -74,17 +74,27 @@ def _child_main(in_q: mp.Queue, out_q: mp.Queue, model_path: str) -> None:
                 continue
             results = model(frame, verbose=False)
             annotated = results[0].plot()
+
+            # (label, confidence) pairs — feeds the alert engine
+            detections = []
+            boxes = getattr(results[0], 'boxes', None)
+            names = getattr(results[0], 'names', None) or {}
+            if boxes is not None and len(boxes) > 0:
+                for cls_id, conf in zip(boxes.cls.tolist(), boxes.conf.tolist()):
+                    detections.append((str(names.get(int(cls_id), int(cls_id))),
+                                       float(conf)))
+
             ok, buf = cv2.imencode('.jpg', annotated,
                                    [int(cv2.IMWRITE_JPEG_QUALITY), 70])
             if ok:
-                out_q.put(('annotated', frame_id, buf.tobytes()))
+                out_q.put(('annotated', frame_id, buf.tobytes(), detections))
         except Exception as exc:
             out_q.put(('error', f'inference: {exc}'))
 
 
 class YoloManager(QObject):
-    annotatedFrame = Signal(int, bytes)     # frame_id, jpeg
-    availabilityChanged = Signal(bool, str) # ai_on, reason
+    annotatedFrame = Signal(int, bytes, object)  # frame_id, jpeg, [(label, conf)]
+    availabilityChanged = Signal(bool, str)      # ai_on, reason
     modelChanged = Signal(str)
 
     def __init__(self, model_path: str, parent=None):
@@ -191,7 +201,8 @@ class YoloManager(QObject):
             if kind == 'annotated':
                 self._inflight = max(0, self._inflight - 1)
                 self._last_result = time.monotonic()
-                self.annotatedFrame.emit(item[1], item[2])
+                detections = item[3] if len(item) > 3 else []
+                self.annotatedFrame.emit(item[1], item[2], detections)
             elif kind == 'ready':
                 self._set_available(True, '')
                 self.modelChanged.emit(item[1])

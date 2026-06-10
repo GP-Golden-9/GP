@@ -45,6 +45,9 @@ def main() -> int:
     ap.add_argument('--no-ai', action='store_true', help='disable YOLO worker')
     ap.add_argument('--exit-after', type=float, default=0,
                     help='quit after N seconds (smoke tests / soak automation)')
+    ap.add_argument('--drill-after', type=float, default=0,
+                    help='trigger a FIRE alert drill after N seconds '
+                         '(same as pressing F9 — for rehearsals and tests)')
     args = ap.parse_args()
 
     run_id = os.environ.get('GP_RUN_ID') or new_run_id()
@@ -78,9 +81,12 @@ def main() -> int:
     win = MainWindow(cfg, yolo_manager=yolo, run_id=run_id)
     theme.enable_dark_titlebar(win)
     win.showMaximized()
+    from PySide6.QtCore import QTimer
     if args.exit_after:
-        from PySide6.QtCore import QTimer
         QTimer.singleShot(int(args.exit_after * 1000), app.quit)
+    if args.drill_after:
+        QTimer.singleShot(int(args.drill_after * 1000),
+                          lambda: win.alerts.drill('FIRE'))
     return app.exec()
 
 

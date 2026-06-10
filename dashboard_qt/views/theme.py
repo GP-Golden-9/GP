@@ -58,6 +58,40 @@ QLabel#chip {{
     font-size: 11px;
 }}
 
+/* ── Alert banner ─────────────────────────────────────────────────── */
+QFrame#alertBanner {{
+    border-radius: 10px;
+    border: 1px solid #7f1d1d;
+}}
+QLabel#alertText {{
+    color: white;
+    font-size: 14px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    background: transparent;
+}}
+QPushButton#ackBtn {{
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    border-radius: 7px;
+    color: white;
+    font-weight: 800;
+    padding: 5px 16px;
+}}
+QPushButton#ackBtn:hover {{ background: rgba(255, 255, 255, 0.28); }}
+
+/* ── Exit button (toolbar) ────────────────────────────────────────── */
+QPushButton#exitBtn {{
+    background: transparent;
+    border: 1px solid #7f1d1d;
+    border-radius: 7px;
+    color: {BAD};
+    font-weight: 700;
+    padding: 5px 14px;
+}}
+QPushButton#exitBtn:hover {{ background: #7f1d1d; color: white; }}
+QPushButton#exitBtn:pressed {{ background: {DANGER}; color: white; }}
+
 /* ── Toolbar ──────────────────────────────────────────────────────── */
 QToolBar {{
     background: {SURFACE};
@@ -246,6 +280,13 @@ ESTOP_IDLE = (f'background:{DANGER}; color:white; font-weight:800; '
 ESTOP_ENGAGED = ('background:#b45309; color:white; font-weight:800; '
                  'font-size:14px; letter-spacing:2px; border:1px solid #92400e; '
                  'border-radius:10px;')
+
+# Alert banner backgrounds (pulse alternates A/B while unacknowledged)
+BANNER_FIRE_A = 'background:#b91c1c;'
+BANNER_FIRE_B = 'background:#7f1d1d;'
+BANNER_GAS_A  = 'background:#b45309;'
+BANNER_GAS_B  = 'background:#78350f;'
+BANNER_ACKED  = 'background:#52525b;'
 
 
 class Card(QFrame):

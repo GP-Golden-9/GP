@@ -1,11 +1,24 @@
 """Main window — assembles views, owns per-robot links/state, routes signals.
 
+Structure (each concern built by its own method, wired in __init__):
+
+    _build_transport()      links + command clients + RobotState per robot
+    _build_alerts()         AlertManager (engine) + AlertBanner (view)
+    _build_toolbar()        branding, robot/model selectors, chips, EXIT
+    _build_central()        cards: video+log | map+(control/health tabs)
+    _build_statusbar()      structured fields, throttled to 4 Hz
+    _wire_control_panel()   operator controls → active robot's commands
+    _wire_inference()       YOLO worker → video view + fire alerts
+    _start_links()          background threads up
+
 Design rules:
   * transport threads → RobotState (single writer) → views; views never
     touch sockets
-  * ALL robots stay connected (cheap; ZMQ reconnects in the background);
-    the ACTIVE robot drives video/map/controls, others still log + health
-  * keyboard always works: WASD/arrows hold-to-drive, Space stop, Esc e-stop
+  * ALL robots stay connected; the ACTIVE robot drives video/map/controls,
+    the others still feed logs, health and ALERTS (a gas alarm on robot3
+    must surface even while you are driving robot2)
+  * keyboard always works: WASD/arrows hold-to-drive, Space stop,
+    Esc e-stop, F9 fire-alert drill
 """
 
 from __future__ import annotations
@@ -17,15 +30,18 @@ from functools import partial
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeyEvent
-from PySide6.QtWidgets import (QComboBox, QLabel, QMainWindow, QPushButton,
-                               QSizePolicy, QSplitter, QTabWidget, QToolBar,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QComboBox, QLabel, QMainWindow,
+                               QMessageBox, QPushButton, QSizePolicy,
+                               QSplitter, QTabWidget, QToolBar, QVBoxLayout,
+                               QWidget)
 
+from alerts import AlertManager
 from gpcore.protocol import commands as cmds
 from state.store import RobotState
 from transport.esp32_link import Esp32Link
 from transport.zmq_link import CommandClient, RobotLink
 from views import theme
+from views.alert_banner import AlertBanner
 from views.control_panel import ControlPanel
 from views.health_panel import HealthPanel
 from views.log_console import LogConsole
@@ -40,6 +56,11 @@ KEY_DIRS = {
     Qt.Key_D: 'R', Qt.Key_Right: 'R',
 }
 
+# Splitter proportions — the map is the operator's main instrument
+SPLIT_H = (820, 1080)        # video column | map column
+SPLIT_LEFT_V = (600, 280)    # video | incident log
+SPLIT_RIGHT_V = (640, 330)   # map | control+health tabs
+
 
 class MainWindow(QMainWindow):
     def __init__(self, app_cfg, yolo_manager=None, run_id: str = 'dash'):
@@ -49,28 +70,41 @@ class MainWindow(QMainWindow):
         self.run_id = run_id
         self.active_id = app_cfg.default_robot
         self._frame_caps: dict[int, float] = {}      # frame_id → cap_t_mono
+        self._last_sb_update = 0.0
 
         self.setWindowTitle('GP Fleet Console')
         self.resize(1480, 880)
-        self._last_sb_update = 0.0
 
-        # ── per-robot transport + state ──
+        self._build_transport()
+        self._build_alerts()
+        self._build_toolbar()
+        self._build_central()
+        self._build_statusbar()
+        self._wire_control_panel()
+        self._wire_inference()
+        self._start_links()
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Construction
+    # ══════════════════════════════════════════════════════════════════════
+    def _build_transport(self) -> None:
         self.links: dict[str, object] = {}
         self.cmd: dict[str, object] = {}
         self.state: dict[str, RobotState] = {}
-        for prof in app_cfg.robots:
+
+        for prof in self.app_cfg.robots:
             st = RobotState(prof.id, parent=self)
             self.state[prof.id] = st
+
             if prof.is_esp32:
                 link = Esp32Link(prof.host,
                                  poll_hz=prof.http.get('poll_hz', 2),
                                  timeout_s=prof.http.get('timeout_s', 1.0),
-                                 run_id=run_id, parent=self)
+                                 run_id=self.run_id, parent=self)
                 link.telemetryReceived.connect(st.on_telemetry)
-                link.ackReceived.connect(
-                    partial(self._on_ack, prof.id))
+                link.ackReceived.connect(partial(self._on_ack, prof.id))
                 self.links[prof.id] = link
-                self.cmd[prof.id] = link              # same object serves both
+                self.cmd[prof.id] = link             # same object serves both
             else:
                 link = RobotLink(prof.host, prof.zmq,
                                  legacy_video_port=prof.legacy_video_port,
@@ -79,12 +113,11 @@ class MainWindow(QMainWindow):
                 link.scanReceived.connect(st.on_scan)
                 link.mapReceived.connect(st.on_map)
                 link.healthReceived.connect(st.on_health)
-                link.videoFrameReceived.connect(
-                    partial(self._on_video, prof.id))
+                link.videoFrameReceived.connect(partial(self._on_video, prof.id))
                 link.legacyFrameReceived.connect(
                     partial(self._on_legacy_video, prof.id))
                 client = CommandClient(prof.host, prof.zmq.get('cmd', 5558),
-                                       run_id=run_id, parent=self)
+                                       run_id=self.run_id, parent=self)
                 client.ackReceived.connect(partial(self._on_ack, prof.id))
                 client.commandFailed.connect(partial(self._on_cmd_failed, prof.id))
                 client.linkUp.connect(partial(self._on_link_state, prof.id))
@@ -99,7 +132,17 @@ class MainWindow(QMainWindow):
             st.logLine.connect(partial(self._on_robot_log, prof.id))
             st.estopChanged.connect(partial(self._on_robot_estop, prof.id))
 
-        # ── toolbar ──
+    def _build_alerts(self) -> None:
+        self.alerts = AlertManager(parent=self)
+        self.alert_banner = AlertBanner()
+        self.alerts.alertRaised.connect(self._on_alert_raised)
+        self.alerts.alertAcked.connect(self.alert_banner.on_acked)
+        self.alerts.alertCleared.connect(self.alert_banner.on_cleared)
+        self.alerts.logEvent.connect(
+            lambda line: self.log_console.append_line(line, source='local'))
+        self.alert_banner.ackClicked.connect(self.alerts.acknowledge)
+
+    def _build_toolbar(self) -> None:
         tb = QToolBar('Fleet')
         tb.setMovable(False)
         self.addToolBar(tb)
@@ -112,10 +155,10 @@ class MainWindow(QMainWindow):
         robot_lbl.setObjectName('sectionTitle')
         tb.addWidget(robot_lbl)
         self.robot_combo = QComboBox()
-        for prof in app_cfg.robots:
+        for prof in self.app_cfg.robots:
             self.robot_combo.addItem(f'{prof.name}  ·  {prof.id}', prof.id)
         self.robot_combo.setCurrentIndex(
-            max(0, [p.id for p in app_cfg.robots].index(self.active_id)))
+            max(0, [p.id for p in self.app_cfg.robots].index(self.active_id)))
         self.robot_combo.currentIndexChanged.connect(self._robot_switched)
         tb.addWidget(self.robot_combo)
 
@@ -123,9 +166,10 @@ class MainWindow(QMainWindow):
         model_lbl.setObjectName('sectionTitle')
         tb.addWidget(model_lbl)
         self.model_combo = QComboBox()
-        for p in sorted(glob.glob(os.path.join(app_cfg.prefs.models_dir, '*.pt'))):
+        models_dir = self.app_cfg.prefs.models_dir
+        for p in sorted(glob.glob(os.path.join(models_dir, '*.pt'))):
             self.model_combo.addItem(os.path.basename(p), p)
-        idx = self.model_combo.findText(app_cfg.prefs.default_model)
+        idx = self.model_combo.findText(self.app_cfg.prefs.default_model)
         if idx >= 0:
             self.model_combo.setCurrentIndex(idx)
         self.model_combo.currentIndexChanged.connect(self._model_switched)
@@ -137,10 +181,16 @@ class MainWindow(QMainWindow):
 
         self.link_chip = chip('LINK …')
         tb.addWidget(self.link_chip)
-        self.runid_chip = chip(f'run {run_id}')
+        self.runid_chip = chip(f'run {self.run_id}')
         tb.addWidget(self.runid_chip)
 
-        # ── central layout (cards inside splitters) ──
+        exit_btn = QPushButton('EXIT')
+        exit_btn.setObjectName('exitBtn')
+        exit_btn.setFocusPolicy(Qt.NoFocus)
+        exit_btn.clicked.connect(self._confirm_exit)
+        tb.addWidget(exit_btn)
+
+    def _build_central(self) -> None:
         self.video_view = VideoView()
         self.log_console = LogConsole()
         self.map_view = MapView()
@@ -162,7 +212,8 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.setFocusPolicy(Qt.NoFocus)
         self.control_panel = ControlPanel(
-            app_cfg.prefs, accessories_enabled=(self.active_id == 'robot2'))
+            self.app_cfg.prefs,
+            accessories_enabled=(self.active_id == 'robot2'))
         self.health_panel = HealthPanel()
         tabs.addTab(self.control_panel, 'CONTROL')
         tabs.addTab(self.health_panel, 'HEALTH')
@@ -172,33 +223,37 @@ class MainWindow(QMainWindow):
         left = QSplitter(Qt.Vertical)
         left.addWidget(video_card)
         left.addWidget(log_card)
-        left.setSizes([580, 240])
+        left.setSizes(list(SPLIT_LEFT_V))
 
         right = QSplitter(Qt.Vertical)
         right.addWidget(map_card)
         right.addWidget(panel_card)
-        right.setSizes([420, 420])
+        right.setSizes(list(SPLIT_RIGHT_V))
 
         split = QSplitter(Qt.Horizontal)
         split.addWidget(left)
         split.addWidget(right)
-        split.setSizes([860, 600])
+        split.setSizes(list(SPLIT_H))
 
         wrapper = QWidget()
         outer = QVBoxLayout(wrapper)
-        outer.setContentsMargins(10, 10, 10, 10)
-        outer.addWidget(split)
+        outer.setContentsMargins(10, 8, 10, 10)
+        outer.setSpacing(8)
+        outer.addWidget(self.alert_banner)
+        outer.addWidget(split, 1)
         self.setCentralWidget(wrapper)
 
-        # status bar: structured fields, updated at most 4×/s
+    def _build_statusbar(self) -> None:
         sb = self.statusBar()
         self.sb_nav = QLabel('nav —')
         self.sb_enc = QLabel('enc —')
-        self.sb_acc = QLabel('acc —')
+        self.sb_acc = QLabel('')
         for w in (self.sb_nav, self.sb_enc, self.sb_acc):
             sb.addWidget(w)
+        hint = QLabel('Esc e-stop  ·  Space stop  ·  F9 alert drill')
+        sb.addPermanentWidget(hint)
 
-        # ── control panel → active robot ──
+    def _wire_control_panel(self) -> None:
         cp = self.control_panel
         cp.driveRequested.connect(self._drive)
         cp.stopRequested.connect(self._stop)
@@ -208,30 +263,33 @@ class MainWindow(QMainWindow):
         cp.pumpRequested.connect(self._pump)
         cp.servoRequested.connect(self._servo)
 
-        # ── inference ──
-        if self.yolo is not None:
-            self.yolo.annotatedFrame.connect(self._on_annotated)
-            self.yolo.availabilityChanged.connect(self._on_ai_state)
-            self.yolo.modelChanged.connect(
-                lambda p: self._local_log(f'AI model active: {os.path.basename(p)}'))
-        else:
+    def _wire_inference(self) -> None:
+        if self.yolo is None:
             self.video_view.set_ai_state(False, 'inference disabled')
+            return
+        self.yolo.annotatedFrame.connect(self._on_annotated)
+        self.yolo.availabilityChanged.connect(self._on_ai_state)
+        self.yolo.modelChanged.connect(
+            lambda p: self._local_log(f'AI model active: {os.path.basename(p)}'))
 
+    def _start_links(self) -> None:
         for link in self.links.values():
             link.start()
         for client in self.cmd.values():
             if client not in self.links.values():
                 client.start()
-        self._local_log(f'console up — run {run_id}, active robot {self.active_id}')
+        self._local_log(f'console up — run {self.run_id}, '
+                        f'active robot {self.active_id}')
 
-    # ════════ active-robot helpers ════════
+    # ══════════════════════════════════════════════════════════════════════
+    # Operator controls → active robot
+    # ══════════════════════════════════════════════════════════════════════
     def _client(self):
         return self.cmd[self.active_id]
 
     def _is_active(self, robot_id: str) -> bool:
         return robot_id == self.active_id
 
-    # ════════ controls → commands ════════
     def _drive(self, vx: float, wz: float) -> None:
         self._client().drive(vx, wz)
 
@@ -264,8 +322,15 @@ class MainWindow(QMainWindow):
         self.map_view.set_goal(x, y)
         self._local_log(f'goal → ({x:.2f}, {y:.2f})')
 
-    # ════════ state → views (active robot filter) ════════
+    # ══════════════════════════════════════════════════════════════════════
+    # Robot state → views (active-robot filter; alerts are fleet-wide)
+    # ══════════════════════════════════════════════════════════════════════
     def _on_telemetry(self, robot_id: str, payload: dict) -> None:
+        # Gas alarms surface from ANY robot, not just the active one
+        esp = payload.get('esp32')
+        if isinstance(esp, dict):
+            self.alerts.process_gas(robot_id, bool(esp.get('a')), esp.get('g'))
+
         if not self._is_active(robot_id):
             return
         odom = payload.get('odom')
@@ -278,7 +343,7 @@ class MainWindow(QMainWindow):
         if servo is not None:
             self.control_panel.set_servo_feedback(int(servo))
 
-        # status bar at 4 Hz max — repainting labels at telemetry rate (20 Hz)
+        # status bar at 4 Hz max — repainting at telemetry rate (20 Hz)
         # is wasted work and makes the text flicker
         now = time.monotonic()
         if now - self._last_sb_update >= 0.25:
@@ -337,7 +402,9 @@ class MainWindow(QMainWindow):
                        reason: str) -> None:
         self._local_log(f'{robot_id} {cmd_type} FAILED: {reason}')
 
-    # ════════ video path ════════
+    # ══════════════════════════════════════════════════════════════════════
+    # Video & inference
+    # ══════════════════════════════════════════════════════════════════════
     def _on_video(self, robot_id: str, meta, jpeg: bytes) -> None:
         if not self._is_active(robot_id):
             return
@@ -355,7 +422,7 @@ class MainWindow(QMainWindow):
             self.video_view.show_jpeg(jpeg, st.video_frame_age_s(cap))
 
     def _on_legacy_video(self, robot_id: str, jpeg: bytes) -> None:
-        # only used when the framed channel is silent (old camera script)
+        # only used while the framed channel is silent (old camera script)
         if not self._is_active(robot_id):
             return
         if self.state[robot_id].streams['video'].age_s() < 2.0:
@@ -365,18 +432,28 @@ class MainWindow(QMainWindow):
         else:
             self.video_view.show_jpeg(jpeg, None)
 
-    def _on_annotated(self, frame_id: int, jpeg: bytes) -> None:
+    def _on_annotated(self, frame_id: int, jpeg: bytes, detections) -> None:
         st = self.state.get(self.active_id)
         cap = self._frame_caps.get(frame_id)
         age = st.video_frame_age_s(cap) if (st and cap) else None
         self.video_view.show_jpeg(jpeg, age)
+        self.alerts.process_fire_detections(self.active_id, detections)
 
     def _on_ai_state(self, on: bool, reason: str) -> None:
         self.video_view.set_ai_state(on, reason)
         if not on and reason:
             self._local_log(f'AI OFF: {reason}')
 
-    # ════════ switching ════════
+    # ══════════════════════════════════════════════════════════════════════
+    # Alerts
+    # ══════════════════════════════════════════════════════════════════════
+    def _on_alert_raised(self, kind: str, info: dict) -> None:
+        self.alert_banner.on_raised(kind, info)
+        QApplication.beep()
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Switching, keyboard, lifecycle
+    # ══════════════════════════════════════════════════════════════════════
     def _robot_switched(self, _index: int) -> None:
         new_id = self.robot_combo.currentData()
         if new_id == self.active_id:
@@ -391,12 +468,14 @@ class MainWindow(QMainWindow):
         if self.yolo is not None:
             self.yolo.set_model(self.model_combo.currentData())
 
-    # ════════ keyboard ════════
     def keyPressEvent(self, e: QKeyEvent) -> None:
         if e.isAutoRepeat():
             return
         if e.key() == Qt.Key_Escape:
             self.control_panel.set_estop(True)
+            return
+        if e.key() == Qt.Key_F9:                 # alert drill (rehearsal)
+            self.alerts.drill('FIRE')
             return
         if e.key() == Qt.Key_Space:
             self.control_panel.keyboard_direction(None)
@@ -415,7 +494,16 @@ class MainWindow(QMainWindow):
             return
         super().keyReleaseEvent(e)
 
-    # ════════ misc ════════
+    def _confirm_exit(self) -> None:
+        answer = QMessageBox.question(
+            self, 'Exit console',
+            'Close the operator console?\n\n'
+            'Robots stop automatically via the deadman chain, but any '
+            'engaged e-stop stays latched on the robot.',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer == QMessageBox.Yes:
+            self.close()
+
     def _local_log(self, line: str) -> None:
         self.log_console.append_line(line, source='local')
 
