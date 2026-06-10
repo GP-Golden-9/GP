@@ -7,8 +7,11 @@
 // ==========================================
 // 1. WiFi Configuration
 // ==========================================
-const char* ssid = "Sonnet";
-const char* password = "Eng_Matouk_HelloSonnet"; 
+// Credentials removed from source control — fill in before flashing.
+// (v2 in firmware/robot3_controller_v2/ reads them from a gitignored
+// config_secrets.h instead; prefer flashing v2.)
+const char* ssid = "YOUR-WIFI-SSID";
+const char* password = "YOUR-WIFI-PASSWORD";
 
 WebServer server(80);
 
