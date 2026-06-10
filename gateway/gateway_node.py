@@ -315,18 +315,25 @@ class GatewayNode(Node):
                                 {'line': 'GATEWAY: drive deadman tripped'})
 
     def _tick_telemetry(self):
+        # On the SLAM robot, map->base_link IS the authoritative pose
+        # (drift-corrected). Use it for position whenever it resolves and
+        # keep the velocities from /odom (zero if no odom source). Robots
+        # without a map frame raise TransformException and keep wheel odom.
         try:
-            t = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
-            x = t.transform.translation.x
-            y = t.transform.translation.y
+            t = self.tf_buffer.lookup_transform('map', 'base_link',
+                                                rclpy.time.Time())
             q = t.transform.rotation
             siny = 2.0 * (q.w * q.z + q.x * q.y)
             cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-            th = math.atan2(siny, cosy)
-            
-            if not self.state.get('odom') or self.state['odom'].get('v', 0.0) == 0.0:
-                self.state['odom'] = {'x': round(x, 4), 'y': round(y, 4), 'th': round(th, 4), 'v': 0.0, 'w': 0.0}
-                self.health.touch('odom')
+            prev = self.state.get('odom') or {}
+            self.state['odom'] = {
+                'x': round(t.transform.translation.x, 4),
+                'y': round(t.transform.translation.y, 4),
+                'th': round(math.atan2(siny, cosy), 4),
+                'v': prev.get('v', 0.0),
+                'w': prev.get('w', 0.0),
+            }
+            self.health.touch('odom')
         except TransformException:
             pass
 

@@ -14,7 +14,10 @@ slam_toolbox:
     # Load relief for the Pi 4 (was 0.3 / 0.1 / 0.0 — every scan processed,
     # map republished ~3x/s; caused CPU saturation and map flicker/jumps):
     map_update_interval: 1.0
-    resolution: 0.05
+    # 0.05 reads "blocky" at console zoom; 0.025 doubles wall crispness
+    # (A1M8 accuracy <1% supports it — see docs/design_notes/ LiDAR
+    # research). 4x cells: watch Pi 4 CPU; fall back to 0.05 if load1 > 3.
+    resolution: 0.025
     max_laser_range: 12.0
     minimum_time_interval: 0.3
     transform_timeout: 0.5
