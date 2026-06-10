@@ -25,6 +25,7 @@ import zlib
 from array import array
 
 import rclpy
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
@@ -109,7 +110,7 @@ class GatewayNode(Node):
         s(cmds.CMD_SPEED, self._h_speed)
 
         # ── timers ──
-        self.create_timer(0.02, self._tick_commands)          # 50 Hz
+        self.create_timer(0.01, self._tick_commands)          # 100 Hz – ZMQ cmd poll
         self.create_timer(1.0 / TELE_HZ, self._tick_telemetry)
         self.create_timer(1.0 / HEALTH_HZ, self._tick_health)
 
@@ -255,7 +256,7 @@ class GatewayNode(Node):
 
     # ════════ periodic ════════
     def _tick_commands(self):
-        self.server.poll_commands(0)
+        self.server.poll_commands(5)   # 5 ms block — lets ROUTER actually receive
         if self.server.deadman_tripped():
             self.pub_manual.publish(Twist())
             self.log.warning('drive deadman tripped — stop sent')
@@ -282,11 +283,14 @@ def main():
 
     rclpy.init(args=ros_args)
     node = GatewayNode(cfg, run_id)
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         node.server.close()
         node.destroy_node()
         rclpy.shutdown()
