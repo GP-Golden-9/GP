@@ -57,8 +57,10 @@ class GatewayServer:
         self.cmd_sock.setsockopt(zmq.LINGER, 0)
         self.cmd_sock.bind(endpoints['cmd'])
 
-        self._seq: Dict[str, int] = {name: 0 for name in self.PUB_CHANNELS}
-        self._seq['cmd'] = 0
+        # seq counters are PER MESSAGE TYPE (not per channel): tele.full and
+        # tele.scan interleave on one socket, and a shared counter would make
+        # every scan look like a lost tele.full to consumers' gap detection.
+        self._seq: Dict[str, int] = {}
 
         self.deduper = cmds.CommandDeduper()
         self.deadman = cmds.DriveDeadman()
@@ -69,8 +71,8 @@ class GatewayServer:
 
     # ── publishing ────────────────────────────────────────────────────────
     def publish(self, channel: str, msg_type: str, payload: dict) -> int:
-        self._seq[channel] += 1
-        seq = self._seq[channel]
+        seq = self._seq.get(msg_type, 0) + 1
+        self._seq[msg_type] = seq
         env = make_envelope(msg_type, payload, seq=seq, run_id=self.run_id,
                             src=self.src)
         try:
@@ -148,8 +150,9 @@ class GatewayServer:
         self._ack(identity, env, ok=ok, detail=detail)
 
     def _ack(self, identity: bytes, env: Envelope, *, ok: bool, detail: str) -> None:
-        self._seq['cmd'] += 1
-        ack = cmds.make_ack(env, ok=ok, detail=detail, seq=self._seq['cmd'],
+        seq = self._seq.get('ack', 0) + 1
+        self._seq['ack'] = seq
+        ack = cmds.make_ack(env, ok=ok, detail=detail, seq=seq,
                             run_id=self.run_id, src=self.src)
         try:
             self.cmd_sock.send_multipart([identity, encode(ack)], zmq.NOBLOCK)

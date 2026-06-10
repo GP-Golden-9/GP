@@ -15,6 +15,7 @@ incidents/
 *.log
 docs/baseline/probe_*.csv
 docs/baseline/probe_*.json
+docs/baseline/soak_*.json
 
 # Secrets (ESP32 WiFi credentials — template is committed instead)
 firmware/**/config_secrets.h
