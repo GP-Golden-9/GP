@@ -32,6 +32,11 @@ from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import Bool, Float32, Int32MultiArray, String
 
+import math
+from tf2_ros import TransformException
+from tf2_ros.buffer import Buffer
+from tf2_ros.transform_listener import TransformListener
+
 # allow running from a source checkout (gateway/ next to common/)
 _here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _here)
@@ -81,6 +86,9 @@ class GatewayNode(Node):
         }
         self._last_scan_fwd = 0.0
         self._last_map_fwd = 0.0
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # ── ROS subscriptions (robot-local only) ──
         sub = self.create_subscription
@@ -289,6 +297,21 @@ class GatewayNode(Node):
                                 {'line': 'GATEWAY: drive deadman tripped'})
 
     def _tick_telemetry(self):
+        try:
+            t = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+            x = t.transform.translation.x
+            y = t.transform.translation.y
+            q = t.transform.rotation
+            siny = 2.0 * (q.w * q.z + q.x * q.y)
+            cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+            th = math.atan2(siny, cosy)
+            
+            if not self.state.get('odom') or self.state['odom'].get('v', 0.0) == 0.0:
+                self.state['odom'] = {'x': round(x, 4), 'y': round(y, 4), 'th': round(th, 4), 'v': 0.0, 'w': 0.0}
+                self.health.touch('odom')
+        except TransformException:
+            pass
+
         self.server.publish('telemetry', ch.TELE_FULL, dict(self.state))
 
     def _tick_health(self):
