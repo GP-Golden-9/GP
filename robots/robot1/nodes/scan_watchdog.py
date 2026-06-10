@@ -30,12 +30,21 @@ class ScanWatchdog(Node):
     def __init__(self):
         super().__init__('scan_watchdog')
         self.declare_parameter('min_scan_hz', 3.0)
-        self.declare_parameter('stall_grace_s', 5.0)
+        self.declare_parameter('stall_grace_s', 8.0)
+        # Field incident 2026-06-11: without a startup grace the watchdog
+        # measured "0 Hz" one second after arming (DDS discovery of /scan
+        # still in progress), stopped a perfectly healthy motor, then
+        # escalated to pkill on the same 5 s cadence — faster than the
+        # driver's ~5 s respawn-to-scanning time — and kill-looped forever.
+        self.declare_parameter('startup_grace_s', 20.0)
+        self.declare_parameter('kill_grace_s', 20.0)   # driver respawn + init
         self.declare_parameter('allow_kill', True)
 
         self._stamps: list[float] = []
-        self._last_action = 0.0
+        self._armed_at = time.monotonic()
+        self._last_action = time.monotonic()
         self._escalation = 0          # 0 = healthy, 1 = motor kicked, 2 = killed
+        self._start_timer = None
 
         self.create_subscription(LaserScan, '/scan', self._scan_cb, 10)
         self.log_pub = self.create_publisher(String, '/robot_log', 10)
@@ -57,11 +66,18 @@ class ScanWatchdog(Node):
 
     def _check(self):
         min_hz = self.get_parameter('min_scan_hz').value
-        grace = self.get_parameter('stall_grace_s').value
         now = time.monotonic()
 
+        # let the driver finish booting and DDS finish discovering /scan
+        if now - self._armed_at < self.get_parameter('startup_grace_s').value:
+            return
         if self._rate_hz() >= min_hz:
             return
+        # after a driver kill, the respawned process needs respawn_delay +
+        # init time before scans can possibly flow — wait longer than that
+        grace = (self.get_parameter('kill_grace_s').value
+                 if self._escalation >= 2
+                 else self.get_parameter('stall_grace_s').value)
         if now - self._last_action < grace:
             return
         self._last_action = now
@@ -79,12 +95,24 @@ class ScanWatchdog(Node):
             self._announce('LIDAR: still stalled (driver restart disabled)')
 
     def _kick_motor(self):
-        for cli, name in ((self.stop_cli, 'stop'), (self.start_cli, 'start')):
-            if cli.service_is_ready():
-                cli.call_async(Empty.Request())
-                time.sleep(1.0)
+        # NEVER time.sleep() here: blocking our executor stalls our own
+        # /scan subscription, which made the post-kick rate read low and
+        # triggered a bogus escalation.
+        if self.stop_cli.service_is_ready():
+            self.stop_cli.call_async(Empty.Request())
+        else:
+            self.get_logger().warn('/stop_motor service not available')
+
+        def _restart_motor():
+            self._start_timer.cancel()
+            if self.start_cli.service_is_ready():
+                self.start_cli.call_async(Empty.Request())
             else:
-                self.get_logger().warn(f'/{name}_motor service not available')
+                self.get_logger().warn('/start_motor service not available')
+
+        if self._start_timer is not None:
+            self._start_timer.cancel()
+        self._start_timer = self.create_timer(1.5, _restart_motor)
 
     def _kill_driver(self):
         try:
