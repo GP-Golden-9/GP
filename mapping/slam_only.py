@@ -17,10 +17,12 @@ def generate_launch_description():
     ld.add_action(Node(
         package='tf2_ros',
         executable='static_transform_publisher',
-        arguments=['--x', '0', '--y', '0', '--z', '0', 
+        arguments=['--x', '0', '--y', '0', '--z', '0',
                    '--roll', '0', '--pitch', '0', '--yaw', '0',
                    '--frame-id', 'odom', '--child-frame-id', 'base_link'],
-        output='log'
+        output='log',
+        respawn=True,
+        respawn_delay=2.0
     ))
 
     # TF: base_link -> laser
@@ -30,16 +32,21 @@ def generate_launch_description():
         arguments=['--x', '0', '--y', '0', '--z', '0',
                    '--roll', '0', '--pitch', '0', '--yaw', '0',
                    '--frame-id', 'base_link', '--child-frame-id', 'laser'],
-        output='log'
+        output='log',
+        respawn=True,
+        respawn_delay=2.0
     ))
 
-    # SLAM Toolbox (no RViz!)
+    # SLAM Toolbox (no RViz!) — respawn: a SLAM crash must not end mapping
+    # for the whole run (the map restarts fresh, same as RESET MAP)
     ld.add_action(Node(
         package='slam_toolbox',
         executable='async_slam_toolbox_node',
         name='slam_toolbox',
         output='screen',
-        parameters=[slam_params_file]
+        parameters=[slam_params_file],
+        respawn=True,
+        respawn_delay=2.0
     ))
 
     return ld

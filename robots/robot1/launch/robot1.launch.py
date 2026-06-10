@@ -20,6 +20,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import (AnyLaunchDescriptionSource,
                                                PythonLaunchDescriptionSource)
 from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 RUN_ID = time.strftime('%Y%m%dT%H%M', time.gmtime()) + '-' + uuid.uuid4().hex[:4]
@@ -42,13 +43,11 @@ def generate_launch_description():
 
     try:
         from ament_index_python.packages import get_package_share_directory
-        rplidar_launch = os.path.join(get_package_share_directory('rplidar_ros'),
-                                      'launch', 'rplidar_a1_launch.py')
         rosbridge_launch = os.path.join(
             get_package_share_directory('rosbridge_server'),
             'launch', 'rosbridge_websocket_launch.xml')
     except Exception:                      # allows syntax-checking off-robot
-        rplidar_launch = rosbridge_launch = '/dev/null'
+        rosbridge_launch = '/dev/null'
 
     return LaunchDescription([
         DeclareLaunchArgument('enable_rosbridge', default_value='false',
@@ -59,10 +58,26 @@ def generate_launch_description():
         SetEnvironmentVariable('ROS_LOCALHOST_ONLY', '1'),
         SetEnvironmentVariable('GP_RUN_ID', RUN_ID),
 
-        # LiDAR driver (restart-on-stall handled by scan_watchdog + respawn)
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(rplidar_launch),
-            launch_arguments={'serial_port': LIDAR_PORT}.items(),
+        # LiDAR driver — run DIRECTLY (not via rplidar_a1_launch.py) so OUR
+        # respawn applies. Field failure 2026-06-11: the included launch ran
+        # the driver without respawn; one abort at boot (-6 before the serial
+        # port settled) left /scan dead until a manual service restart, and
+        # the scan_watchdog's pkill rung assumes respawn exists.
+        Node(
+            package='rplidar_ros',
+            executable='rplidar_node',
+            name='rplidar_node',
+            output='screen',
+            respawn=True,
+            respawn_delay=3.0,             # USB needs a beat after an abort
+            parameters=[{
+                'serial_port': LIDAR_PORT,    # A1 defaults from
+                'serial_baudrate': 115200,    # rplidar_a1_launch.py
+                'frame_id': 'laser',
+                'inverted': False,
+                'angle_compensate': True,
+                'scan_mode': 'Sensitivity',
+            }],
         ),
 
         # SLAM (existing launch file in mapping/)
