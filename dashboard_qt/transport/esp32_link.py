@@ -98,11 +98,14 @@ class Esp32Link(QObject):
                     data = r.json()
                     up = True
                     self._seq += 1
+                    # NOTE: the ESP32 has no odometry — its telemetry x/y are
+                    # accelerometer TILT, never feed them into the pose
+                    # pipeline. Pose stays at the frame origin so the operator
+                    # places Gamma manually with the map's SET POSE tool.
                     self.telemetryReceived.emit(make_envelope(ch.TELE_FULL, {
                         'esp32': data,
                         'gas': data.get('g'),
-                        'odom': {'x': data.get('x', 0), 'y': data.get('y', 0),
-                                 'th': data.get('a', 0), 'v': 0, 'w': 0},
+                        'odom': {'x': 0.0, 'y': 0.0, 'th': 0.0, 'v': 0, 'w': 0},
                     }, seq=self._seq, run_id=self.run_id, src=self.host))
                 except (requests.RequestException, ValueError):
                     pass

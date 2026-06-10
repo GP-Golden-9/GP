@@ -150,7 +150,12 @@ class AlertManager(QObject):
         self.alertRaised.emit(kind.value, info)
         tag = ' [DRILL]' if info.get('drill') else ''
         conf = info.get('confidence')
-        conf_txt = f' conf {conf}%' if isinstance(conf, int) else ''
+        if not isinstance(conf, (int, float)):
+            conf_txt = ''
+        elif kind is AlertKind.GAS:          # raw sensor level, NOT a percent
+            conf_txt = f' level {conf:.0f}'
+        else:
+            conf_txt = f' conf {conf:.0f}%'
         self.logEvent.emit(
             f'ALERT {kind.value}{tag}: {info.get("label")} on '
             f'{info.get("robot")}{conf_txt}')

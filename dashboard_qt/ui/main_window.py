@@ -457,6 +457,7 @@ class MainWindow(QMainWindow):
         esp = payload.get('esp32')
         if isinstance(esp, dict):                 # gas alarms are fleet-wide
             self.alerts.process_gas(robot_id, bool(esp.get('a')), esp.get('g'))
+            self._update_esp32_readouts(robot_id, esp)
 
         pose = self._aligned_pose(robot_id)
         if pose is not None:
@@ -480,15 +481,48 @@ class MainWindow(QMainWindow):
         now = time.monotonic()
         if now - self._last_sb >= 0.25:
             self._last_sb = now
-            state = (nav or 'IDLE').split(':')[0]
-            color = {'DRIVING': theme.ACCENT, 'ROTATING': theme.WARN,
-                     'ARRIVED': theme.GOOD}.get(state, theme.MUTED)
-            self.sb_nav.setText(f'{robot_id} · nav {nav or "IDLE"}')
-            self.sb_nav.setStyleSheet(f'color:{color};')
-            enc = payload.get('enc')
-            self.sb_enc.setText(f'enc {enc}' if enc else 'enc —')
-            acc = payload.get('accessory')
-            self.sb_acc.setText(f'acc {acc}' if acc else '')
+            if isinstance(esp, dict):             # inspector: env readouts
+                gas = esp.get('g', '—')
+                alarm = bool(esp.get('a'))
+                self.sb_nav.setText(f'{robot_id} · gas {gas}'
+                                    + (' · ALARM' if alarm else ''))
+                self.sb_nav.setStyleSheet(
+                    f'color:{theme.BAD if alarm else theme.MUTED};')
+                self.sb_enc.setText(f"dist {esp.get('d', '—')} cm")
+                rssi = esp.get('rssi')
+                self.sb_acc.setText(f'rssi {rssi} dBm' if rssi is not None else '')
+            else:
+                state = (nav or 'IDLE').split(':')[0]
+                color = {'DRIVING': theme.ACCENT, 'ROTATING': theme.WARN,
+                         'ARRIVED': theme.GOOD}.get(state, theme.MUTED)
+                self.sb_nav.setText(f'{robot_id} · nav {nav or "IDLE"}')
+                self.sb_nav.setStyleSheet(f'color:{color};')
+                enc = payload.get('enc')
+                self.sb_enc.setText(f'enc {enc}' if enc else 'enc —')
+                acc = payload.get('accessory')
+                self.sb_acc.setText(f'acc {acc}' if acc else '')
+
+    def _update_esp32_readouts(self, robot_id: str, esp: dict) -> None:
+        """Gas level lives on the FLEET CARD (always visible) and in the
+        diagnostics vitals — the inspector's reading must never require
+        switching robots to see."""
+        gas = esp.get('g')
+        alarm = bool(esp.get('a'))
+        profile = self.app_cfg.profile(robot_id)
+        warn_at = (profile.gas or {}).get('clear_threshold', 2000)
+        card = self.fleet.cards.get(robot_id)
+        if card and gas is not None:
+            rssi = esp.get('rssi')
+            text = f'gas {gas}' + (' ALARM' if alarm else '') + \
+                   (f' · {rssi} dBm' if rssi is not None else '')
+            card.set_vitals(text, warn=alarm or (gas >= warn_at))
+        # mirror into the diagnostics vitals strip (health-channel shape)
+        self.drawer.diagnostics.update_vitals(robot_id, {
+            'sys': {'rssi_dbm': esp.get('rssi'), 'temp_c': None,
+                    'throttled': None, 'load1': None,
+                    'mem_free_mb': None, 'disk_free_mb': None},
+            'uptime_s': esp.get('uptime'),
+        })
 
     def _on_scan(self, robot_id: str, payload: dict) -> None:
         pose = self._aligned_pose(robot_id)

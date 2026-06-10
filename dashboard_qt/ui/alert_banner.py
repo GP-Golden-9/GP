@@ -78,7 +78,12 @@ class AlertBanner(QFrame):
         info, acked = entry['info'], entry['acked']
         drill = ' · DRILL' if info.get('drill') else ''
         conf = info.get('confidence')
-        conf_txt = f' · confidence {conf}%' if isinstance(conf, int) else ''
+        if not isinstance(conf, (int, float)):
+            conf_txt = ''
+        elif kind == 'GAS':                  # raw sensor level, NOT a percent
+            conf_txt = f' · level {conf:.0f}'
+        else:
+            conf_txt = f' · confidence {conf:.0f}%'
         more = f'   (+{len(self._alerts) - 1} more)' if len(self._alerts) > 1 else ''
         self.text.setText(
             f'{ICON.get(kind, "⚠")}  {kind} DETECTED{drill}  ·  '

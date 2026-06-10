@@ -38,6 +38,10 @@ def start_sim() -> subprocess.Popen:
         cmd += ['--fire-image', fire_asset]
     proc = subprocess.Popen(cmd, cwd=REPO)
     atexit.register(lambda: proc.poll() is None and proc.terminate())
+    # fake ESP32 inspector (Gamma) — gas readouts + GAS alarm path in sim
+    esp = subprocess.Popen(
+        [sys.executable, os.path.join(HERE, 'sim', 'fake_esp32.py')], cwd=REPO)
+    atexit.register(lambda: esp.poll() is None and esp.terminate())
     return proc
 
 
