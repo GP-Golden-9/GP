@@ -93,6 +93,9 @@ class GatewayNode(Node):
         sub(String, '/nav_status', self._nav_status_cb, 5)
         sub(String, '/accessory_state', self._accessory_cb, 5)
         sub(String, '/robot_log', self._robot_log_cb, 10)
+        
+        from geometry_msgs.msg import PoseWithCovarianceStamped
+        sub(PoseWithCovarianceStamped, '/pose', self._pose_cb, 5)
 
         # ── ROS publishers (commands fan out locally) ──
         self.pub_manual = self.create_publisher(Twist, '/manual_cmd', 10)
@@ -146,6 +149,25 @@ class GatewayNode(Node):
             'th': round(math.atan2(siny, cosy), 4),
             'v': round(msg.twist.twist.linear.x, 3),
             'w': round(msg.twist.twist.angular.z, 3),
+        }
+        self.health.touch('odom')
+
+    def _pose_cb(self, msg):
+        # Fallback if there is no true /odom publisher (like on Robot 1)
+        # We just get the pose from slam_toolbox to populate the dashboard UI
+        p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        siny = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        import math
+        # Don't overwrite if actual odom is flowing (with velocities)
+        if self.state.get('odom') and 'v' in self.state['odom'] and self.state['odom']['v'] != 0.0:
+             pass # keep true odom
+        self.state['odom'] = {
+            'x': round(p.x, 4), 'y': round(p.y, 4),
+            'th': round(math.atan2(siny, cosy), 4),
+            'v': 0.0,
+            'w': 0.0,
         }
         self.health.touch('odom')
 
