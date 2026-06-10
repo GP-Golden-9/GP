@@ -29,20 +29,35 @@ from app_config import load_app_config        # noqa: E402
 from gpcore.logging_setup import new_run_id, setup_logging  # noqa: E402
 
 
-def start_sim() -> subprocess.Popen:
-    cmd = [sys.executable, os.path.join(HERE, 'sim', 'fake_gateway.py')]
-    # If a real fire photo is present (gitignored test asset), composite it
-    # into the sim feed so REAL detection → alert can be exercised end-to-end.
+SIM_ROBOT2_PORT_OFFSET = 10     # robot2's sim shares localhost with robot1's
+
+
+def start_sim() -> None:
+    """THREE independent simulated robots, like the real fleet:
+
+        robot1  mapper — publishes map+scan, wanders autonomously
+        robot2  rover  — camera (+ fire imagery), executes goals/teleop
+        robot3  ESP32  — HTTP inspector with gas readings + leak event
+    """
+    gateway = os.path.join(HERE, 'sim', 'fake_gateway.py')
+
+    def spawn(cmd):
+        proc = subprocess.Popen(cmd, cwd=REPO)
+        atexit.register(lambda: proc.poll() is None and proc.terminate())
+
+    spawn([sys.executable, gateway, '--robot-id', 'robot1', '--role', 'mapper',
+           '--start-x', '-1.3', '--start-y', '1.3'])
+
+    rover = [sys.executable, gateway, '--robot-id', 'robot2', '--role', 'rover',
+             '--port-offset', str(SIM_ROBOT2_PORT_OFFSET),
+             '--start-x', '-1.0', '--start-y', '-1.0']
+    # real fire photo (gitignored test asset) → genuine detections in sim
     fire_asset = os.path.join(HERE, 'sim', 'assets', 'fire_crop.jpg')
     if os.path.isfile(fire_asset):
-        cmd += ['--fire-image', fire_asset]
-    proc = subprocess.Popen(cmd, cwd=REPO)
-    atexit.register(lambda: proc.poll() is None and proc.terminate())
-    # fake ESP32 inspector (Gamma) — gas readouts + GAS alarm path in sim
-    esp = subprocess.Popen(
-        [sys.executable, os.path.join(HERE, 'sim', 'fake_esp32.py')], cwd=REPO)
-    atexit.register(lambda: esp.poll() is None and esp.terminate())
-    return proc
+        rover += ['--fire-image', fire_asset]
+    spawn(rover)
+
+    spawn([sys.executable, os.path.join(HERE, 'sim', 'fake_esp32.py')])
 
 
 def main() -> int:
@@ -66,8 +81,11 @@ def main() -> int:
         start_sim()
         for prof in cfg.robots:
             prof.host = '127.0.0.1'
+            if prof.id == 'robot2':       # rover lives on offset ports in sim
+                prof.zmq = {k: (v + SIM_ROBOT2_PORT_OFFSET if v else 0)
+                            for k, v in prof.zmq.items()}
         cfg.default_robot = 'robot2'
-        log.info('sim mode: all robots → 127.0.0.1')
+        log.info('sim mode: 3 independent robots on 127.0.0.1')
 
     yolo = None
     if not args.no_ai:

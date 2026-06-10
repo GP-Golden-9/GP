@@ -64,9 +64,10 @@ def build_arena() -> np.ndarray:
 
 
 class SimRobot:
-    def __init__(self, grid: np.ndarray):
+    def __init__(self, grid: np.ndarray, x: float = -1.0, y: float = -1.0,
+                 th: float = 0.0):
         self.grid = grid
-        self.x, self.y, self.th = -1.0, -1.0, 0.0
+        self.x, self.y, self.th = x, y, th
         self.v = self.w = 0.0
         self.last_drive = 0.0
         self.enc = [0, 0, 0, 0]
@@ -158,11 +159,12 @@ def draw_flame(frame, cx: int, cy: int, t: float, rng: np.random.Generator) -> N
 
 
 def video_thread(run_id: str, stop: threading.Event, faults: dict,
-                 fire_image_path: str = '') -> None:
+                 fire_image_path: str = '', video_port: int = 5560,
+                 src: str = 'sim') -> None:
     import cv2
     ctx = zmq.Context.instance()
     pub = ctx.socket(zmq.PUB); pub.setsockopt(zmq.SNDHWM, 2)
-    pub.setsockopt(zmq.LINGER, 0); pub.bind('tcp://*:5560')
+    pub.setsockopt(zmq.LINGER, 0); pub.bind(f'tcp://*:{video_port}')
     legacy = ctx.socket(zmq.PUB); legacy.setsockopt(zmq.SNDHWM, 1)
     legacy.setsockopt(zmq.LINGER, 0); legacy.bind('tcp://*:5555')
 
@@ -203,7 +205,7 @@ def video_thread(run_id: str, stop: threading.Event, faults: dict,
         meta = make_envelope(ch.VIDEO_META, {
             'w': 640, 'h': 480, 'fmt': 'jpeg',
             'cap_t_mono': time.monotonic(), 'frame_id': seq,
-        }, seq=seq, run_id=run_id, src='sim')
+        }, seq=seq, run_id=run_id, src=src)
         try:
             pub.send(pack_with_blob(meta, jpeg), zmq.NOBLOCK)
             legacy.send(jpeg, zmq.NOBLOCK)
@@ -221,6 +223,17 @@ def main() -> int:
     ap.add_argument('--fire-image', default='',
                     help='photo of real fire to composite into the video '
                          '(more reliable detection than the synthetic flame)')
+    # Multi-robot sim: each instance is ONE independent robot.
+    ap.add_argument('--robot-id', default='robot2')
+    ap.add_argument('--role', choices=('mapper', 'rover'), default='rover',
+                    help='mapper: publishes map+scan and wanders on its own; '
+                         'rover: publishes video and awaits operator commands')
+    ap.add_argument('--port-offset', type=int, default=0,
+                    help='added to every ZMQ port so several sim robots can '
+                         'share localhost')
+    ap.add_argument('--start-x', type=float, default=-1.0)
+    ap.add_argument('--start-y', type=float, default=-1.0)
+    ap.add_argument('--start-th', type=float, default=0.0)
     args = ap.parse_args()
     faults = {'drop_video_at': args.drop_video_at}
 
@@ -228,10 +241,13 @@ def main() -> int:
     log = setup_logging('fake_gateway', run_id=run_id)
 
     grid = build_arena()
-    robot = SimRobot(grid)
-    server = GatewayServer(run_id=run_id, src='sim-robot2', endpoints={
-        'telemetry': 'tcp://*:5556', 'map': 'tcp://*:5557',
-        'health': 'tcp://*:5559', 'cmd': 'tcp://*:5558'})
+    robot = SimRobot(grid, args.start_x, args.start_y, args.start_th)
+    is_mapper = (args.role == 'mapper')
+    robot.exploring = is_mapper            # the mapper roams autonomously
+    off = args.port_offset
+    server = GatewayServer(run_id=run_id, src=args.robot_id, endpoints={
+        'telemetry': f'tcp://*:{5556 + off}', 'map': f'tcp://*:{5557 + off}',
+        'health': f'tcp://*:{5559 + off}', 'cmd': f'tcp://*:{5558 + off}'})
 
     # ── command handlers drive the sim robot ──
     def h_drive(env):
@@ -275,13 +291,17 @@ def main() -> int:
     server.set_handler(cmds.CMD_SPEED, lambda env: (True, 'ok'))
 
     stop = threading.Event()
-    vt = threading.Thread(target=video_thread,
-                          args=(run_id, stop, faults, args.fire_image),
-                          daemon=True)
-    vt.start()
+    if not is_mapper:                      # only the camera rover streams video
+        vt = threading.Thread(
+            target=video_thread,
+            args=(run_id, stop, faults, args.fire_image, 5560 + off,
+                  args.robot_id),
+            daemon=True)
+        vt.start()
 
     log.info('fake gateway up', extra={'kv': {
-        'ports': '5555-5560', 'arena': '4x4m/4rooms', 'faults': vars(args)}})
+        'robot': args.robot_id, 'role': args.role, 'port_offset': off,
+        'arena': '4x4m/4rooms'}})
 
     grid_z = zlib.compress(grid.tobytes(), 3)
     t0 = time.monotonic()
@@ -314,7 +334,7 @@ def main() -> int:
                                    if robot.goto.has_goal else 'IDLE'),
                     'motor_status': 'SIM', 'accessory': '',
                 })
-            if now - last_scan >= 0.2:
+            if is_mapper and now - last_scan >= 0.2:
                 last_scan = now
                 ranges, da = robot.scan()
                 server.publish('telemetry', ch.TELE_SCAN, {
@@ -323,7 +343,7 @@ def main() -> int:
                     'ranges': ranges.tobytes()})
             map_silent = (args.silence_map_at and
                           args.silence_map_at <= t < args.silence_map_at + 10)
-            if now - last_map >= 1.0 and not map_silent:
+            if is_mapper and now - last_map >= 1.0 and not map_silent:
                 last_map = now
                 server.publish('map', ch.MAP_GRID, {
                     'w': GRID_N, 'h': GRID_N, 'res': RES,
