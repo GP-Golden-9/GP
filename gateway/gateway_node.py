@@ -39,7 +39,9 @@ from gpcore.protocol import commands as cmds
 from gpcore.serialproto import mega_commands as mc
 
 # allow running from a source checkout (gateway/ next to common/)
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_here = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _here)
+sys.path.insert(0, os.path.abspath(os.path.join(_here, '..', 'common')))
 from zmq_server import GatewayServer            # noqa: E402
 from health_aggregator import HealthAggregator  # noqa: E402
 
