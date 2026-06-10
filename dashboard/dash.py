@@ -147,12 +147,15 @@ ui_map_counter = 0
 current_speed = 0.15
 held_key = None
 autonomous_mode = False
+estop_engaged = False
+estop_button = None
 
 # ROS Publishers (initialize after connection)
 manual_topic = None
 _publishers_setup = False
 explore_topic = None
 goal_topic = None
+estop_topic = None
 nav_status_listener = None
 
 # Navigation goal state
@@ -163,13 +166,16 @@ nav_status_label = None
 def setup_publishers():
     """Setup ROS publishers and additional subscribers after connection."""
     global manual_topic, explore_topic, odom_listener, scan_listener
-    global goal_topic, nav_status_listener
+    global goal_topic, nav_status_listener, estop_topic
     if client.is_connected:
         manual_topic = roslibpy.Topic(client, '/manual_cmd', 'geometry_msgs/Twist')
         manual_topic.advertise()
-        
+
         explore_topic = roslibpy.Topic(client, '/explore_enable', 'std_msgs/Bool')
         explore_topic.advertise()
+
+        estop_topic = roslibpy.Topic(client, '/emergency_stop', 'std_msgs/Bool')
+        estop_topic.advertise()
         
         # Goal pose publisher (for click-to-navigate)
         goal_topic = roslibpy.Topic(client, '/goal_pose', 'geometry_msgs/PoseStamped')
@@ -227,24 +233,32 @@ def send_twist(linear: float, angular: float):
 
 def move_forward():
     global held_key
+    if estop_engaged:
+        return
     held_key = 'F'
     send_twist(current_speed, 0)
     update_action("Moving Forward")
 
 def move_backward():
     global held_key
+    if estop_engaged:
+        return
     held_key = 'B'
     send_twist(-current_speed, 0)
     update_action("Moving Backward")
 
 def turn_left():
     global held_key
+    if estop_engaged:
+        return
     held_key = 'L'
     send_twist(0, 0.5)
     update_action("Turning Left")
 
 def turn_right():
     global held_key
+    if estop_engaged:
+        return
     held_key = 'R'
     send_twist(0, -0.5)
     update_action("Turning Right")
@@ -255,6 +269,52 @@ def stop_robot():
     nav_goal = {'x': None, 'y': None}
     send_twist(0, 0)
     update_action("Stopped")
+
+def repeat_manual_cmd():
+    """4 Hz re-publish of the held direction.
+
+    The robot-side bridge only keeps driving while fresh commands arrive
+    (deadman); this stream is what keeps a held key/button moving, and it
+    stops automatically the moment the browser tab dies or WiFi drops.
+    """
+    if estop_engaged or held_key is None:
+        return
+    if held_key == 'F':
+        send_twist(current_speed, 0)
+    elif held_key == 'B':
+        send_twist(-current_speed, 0)
+    elif held_key == 'L':
+        send_twist(0, 0.5)
+    elif held_key == 'R':
+        send_twist(0, -0.5)
+
+def set_emergency_stop(engage: bool):
+    """Real end-to-end e-stop: latches the robot bridge until released."""
+    global estop_engaged, held_key
+    estop_engaged = engage
+    if engage:
+        held_key = None
+    if _is_esp32():
+        _esp32_cmd('S')
+    else:
+        if estop_topic and client.is_connected:
+            estop_topic.publish(roslibpy.Message({'data': engage}))
+        send_twist(0, 0)
+    update_action("EMERGENCY STOP" if engage else "Ready")
+    if estop_button:
+        if engage:
+            estop_button.text = 'RELEASE E-STOP'
+            estop_button.classes(remove='bg-red-700 hover:bg-red-600',
+                                 add='bg-yellow-600 hover:bg-yellow-500')
+        else:
+            estop_button.text = 'EMERGENCY STOP (Esc)'
+            estop_button.classes(remove='bg-yellow-600 hover:bg-yellow-500',
+                                 add='bg-red-700 hover:bg-red-600')
+    ui.notify('EMERGENCY STOP ENGAGED' if engage else 'E-stop released',
+              type='negative' if engage else 'positive')
+
+def toggle_estop():
+    set_emergency_stop(not estop_engaged)
 
 def toggle_autonomous(enabled: bool):
     global autonomous_mode
@@ -301,11 +361,11 @@ def swap_model(new_model_name: str):
 def swap_robot(new_ip: str):
     """Switch to a different robot by reconnecting ROS/ZMQ or ESP32 HTTP."""
     global RASPBERRY_IP, client, connection_notified, _publishers_setup
-    global manual_topic, explore_topic, goal_topic, nav_status_listener
+    global manual_topic, explore_topic, goal_topic, nav_status_listener, estop_topic
     global map_listener, gas_listener, listener, battery_listener, encoders_listener
     global odom_listener, scan_listener, status_listener
     global latest_frame_b64, latest_map_b64
-    global nav_goal, nav_status
+    global nav_goal, nav_status, estop_engaged, held_key
 
     if new_ip == RASPBERRY_IP:
         return
@@ -322,6 +382,9 @@ def swap_robot(new_ip: str):
     manual_topic = None
     explore_topic = None
     goal_topic = None
+    estop_topic = None
+    estop_engaged = False
+    held_key = None
     nav_status_listener = None
     odom_listener = None
     scan_listener = None
@@ -865,8 +928,13 @@ def update_ui_content():
 def handle_keyboard(e):
     """Handle keyboard events for robot control."""
     key = e.key.lower() if hasattr(e.key, 'lower') else str(e.key).lower()
-    
+
     if e.action.keydown:
+        if key == 'escape':
+            set_emergency_stop(True)   # Esc always ENGAGES (release is a deliberate click)
+            return
+        if estop_engaged:
+            return
         if key in ['w', 'arrowup']:
             move_forward()
         elif key in ['s', 'arrowdown']:
@@ -993,14 +1061,24 @@ def main_page():
                 with ui.row().classes('w-full justify-center mb-2'):
                     action_label = ui.label('Ready').classes('text-green-400 font-bold text-lg')
                 
-                # D-Pad Controls
+                # D-Pad Controls — hold-to-drive: motion only while pressed,
+                # release (or leaving the button) stops, matching keyboard UX.
+                def _dpad(label, start):
+                    btn = ui.button(label).classes('w-14 h-12 text-xl bg-blue-600 hover:bg-blue-500 rounded-lg')
+                    btn.on('mousedown', start)
+                    btn.on('touchstart', start)
+                    btn.on('mouseup', stop_robot)
+                    btn.on('mouseleave', stop_robot)
+                    btn.on('touchend', stop_robot)
+                    return btn
+
                 with ui.column().classes('w-full items-center gap-1'):
-                    ui.button('▲', on_click=move_forward).classes('w-14 h-12 text-xl bg-blue-600 hover:bg-blue-500 rounded-lg')
+                    _dpad('▲', move_forward)
                     with ui.row().classes('gap-1'):
-                        ui.button('◀', on_click=turn_left).classes('w-14 h-12 text-xl bg-blue-600 hover:bg-blue-500 rounded-lg')
+                        _dpad('◀', turn_left)
                         ui.button('■', on_click=stop_robot).classes('w-14 h-12 text-xl bg-gray-600 hover:bg-gray-500 rounded-lg')
-                        ui.button('▶', on_click=turn_right).classes('w-14 h-12 text-xl bg-blue-600 hover:bg-blue-500 rounded-lg')
-                    ui.button('▼', on_click=move_backward).classes('w-14 h-12 text-xl bg-blue-600 hover:bg-blue-500 rounded-lg')
+                        _dpad('▶', turn_right)
+                    _dpad('▼', move_backward)
                 
                 # Speed Control
                 ui.label('SPEED').classes('text-gray-500 text-xs mt-3')
@@ -1011,11 +1089,18 @@ def main_page():
                 with ui.row().classes('w-full items-center justify-between mt-2'):
                     ui.label('Autonomous').classes('text-gray-400')
                     ui.switch(on_change=lambda e: toggle_autonomous(e.value)).classes('text-cyan-400')
+
+                # Emergency stop — engages over ROS /emergency_stop (latched on
+                # the robot bridge); Esc engages, releasing requires this click.
+                global estop_button
+                estop_button = ui.button('EMERGENCY STOP (Esc)', on_click=toggle_estop) \
+                    .classes('w-full mt-3 font-bold text-white bg-red-700 hover:bg-red-600 rounded-lg')
             
             
 
     ui.timer(1.0, update_connection_status)
     ui.timer(0.05, update_ui_content)
+    ui.timer(0.25, repeat_manual_cmd)  # held-direction stream → feeds bridge deadman
 
 if __name__ in {"__main__", "__mp_main__"}:
     t1 = threading.Thread(target=connect_to_ros_thread, daemon=True)

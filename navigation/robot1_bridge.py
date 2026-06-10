@@ -19,17 +19,25 @@ class Robot1Bridge(Node):
     def __init__(self):
         super().__init__('robot1_bridge')
         
-        self.declare_parameter('serial_port', '/dev/ttyUSB0')
+        # /dev/mega is a udev symlink (systemd/99-gp-serial.rules) so the
+        # Arduino can never be confused with the RPLidar (both are ttyUSB*).
+        self.declare_parameter('serial_port', '/dev/mega')
         self.declare_parameter('baud_rate', 115200)
         self.declare_parameter('manual_timeout', 0.5)
-        
+        # Firmware stops motors after 2 s of serial silence; keepalive re-sends
+        # the active command while fresh Twists arrive, deadman stops otherwise.
+        self.declare_parameter('keepalive_period', 0.3)
+        self.declare_parameter('deadman_timeout', 0.8)
+
         self.arduino = None
+        self._serial_lock = threading.Lock()
         self.connect_arduino()
-        
+
         # Manual override state
         self.manual_mode = False
         self.manual_last_time = time.time()
         self.emergency_stop = False
+        self.last_twist_time = 0.0
         
         # Subscribers
         self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
@@ -44,6 +52,7 @@ class Robot1Bridge(Node):
         
         # Timers
         self.create_timer(0.1, self.check_manual_timeout)
+        self.create_timer(self.get_parameter('keepalive_period').value, self.keepalive)
         
         # Status polling thread
         self.thread = threading.Thread(target=self.poll_status, daemon=True)
@@ -54,7 +63,7 @@ class Robot1Bridge(Node):
     def connect_arduino(self):
         port = self.get_parameter('serial_port').value
         baud = self.get_parameter('baud_rate').value
-        ports = [port, '/dev/ttyACM0', '/dev/ttyUSB1']
+        ports = list(dict.fromkeys([port, '/dev/mega', '/dev/ttyUSB0', '/dev/ttyACM0']))
         
         for p in ports:
             try:
@@ -77,21 +86,39 @@ class Robot1Bridge(Node):
         else:
             return 'L' if angular > 0 else 'R'
 
-    def _send(self, cmd: str):
-        """Send a command to the Arduino if it differs from the last one."""
+    def _send(self, cmd: str, force: bool = False):
+        """Send a command to the Arduino if it differs from the last one (thread-safe)."""
         if not self.arduino:
             return
-        if cmd != self.last_cmd or cmd == 'S':
+        if force or cmd != self.last_cmd or cmd == 'S':
             try:
-                self.arduino.write(f'{cmd}\n'.encode())
+                with self._serial_lock:
+                    self.arduino.write(f'{cmd}\n'.encode())
                 self.last_cmd = cmd
             except Exception as e:
                 self.get_logger().error(f'Serial write error: {e}')
+
+    def keepalive(self):
+        """Re-send the active motion command while the commander is alive.
+
+        The firmware stops after 2 s of silence (its watchdog); this keeps a
+        legitimate continuous drive alive, and the deadman branch stops the
+        robot if the commander (dashboard/explorer) goes silent mid-drive.
+        """
+        if self.emergency_stop or self.last_cmd not in ('F', 'B', 'L', 'R'):
+            return
+        deadman = self.get_parameter('deadman_timeout').value
+        if time.monotonic() - self.last_twist_time <= deadman:
+            self._send(self.last_cmd, force=True)
+        else:
+            self.get_logger().warn('Deadman: commander silent — stopping')
+            self._send('S')
 
     def cmd_vel_callback(self, msg: Twist):
         """Autonomous command — only processed when not in manual mode."""
         if self.emergency_stop or self.manual_mode:
             return
+        self.last_twist_time = time.monotonic()
         self._send(self._twist_to_cmd(msg))
 
     def manual_cmd_callback(self, msg: Twist):
@@ -100,6 +127,7 @@ class Robot1Bridge(Node):
             return
         self.manual_mode = True
         self.manual_last_time = time.time()
+        self.last_twist_time = time.monotonic()
         self._send(self._twist_to_cmd(msg))
 
     def estop_callback(self, msg: Bool):
@@ -120,10 +148,13 @@ class Robot1Bridge(Node):
                 self.manual_mode = False
 
     def poll_status(self):
+        # 1 Hz (was 5 Hz): every command — including '?' — feeds the firmware
+        # watchdog, so aggressive polling would defeat its safety timeout.
         while rclpy.ok():
             if self.arduino:
                 try:
-                    self.arduino.write(b'?\n') # Request status
+                    with self._serial_lock:
+                        self.arduino.write(b'?\n') # Request status
                     line = self.arduino.readline().decode().strip()
                     if line.startswith('STS:'):
                         # Publish raw status for dashboard
@@ -137,7 +168,7 @@ class Robot1Bridge(Node):
                             self.encoder_pub.publish(enc_msg)
                 except:
                     pass
-            time.sleep(0.2) # 5Hz polling
+            time.sleep(1.0)
 
 def main(args=None):
     rclpy.init(args=args)

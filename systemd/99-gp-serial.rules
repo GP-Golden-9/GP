@@ -1,0 +1,29 @@
+# GP fleet — stable serial device names
+# ──────────────────────────────────────
+# Root cause fix: RPLidar (CP2102) and Arduino Mega both enumerate as
+# /dev/ttyUSB*; whichever wins the race gets ttyUSB0. With these rules the
+# LiDAR is ALWAYS /dev/rplidar and the Arduino ALWAYS /dev/mega, regardless
+# of plug/boot order. MODE 0666 also removes the `sudo chmod 666` hack.
+#
+# Install on EACH Pi:
+#   sudo cp systemd/99-gp-serial.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#   ls -l /dev/rplidar /dev/mega   # both symlinks must exist
+#
+# If a device is missing, find its IDs with:
+#   udevadm info -q property -n /dev/ttyUSB0 | grep -E 'ID_VENDOR_ID|ID_MODEL_ID'
+# and add a matching line below.
+
+# RPLidar A1 (Silicon Labs CP210x USB-UART)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="rplidar", MODE="0666"
+
+# Arduino Mega 2560 (official, ATmega16U2 USB)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", ATTRS{idProduct}=="0042", SYMLINK+="mega", MODE="0666"
+
+# Arduino Mega clone (WCH CH340 USB-UART)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="mega", MODE="0666"
+
+# Arduino Mega clone (CP2102-based boards). NOTE: same chip as the RPLidar!
+# Only uncomment on a Pi that does NOT also host the RPLidar (i.e. robot2),
+# otherwise both devices would claim both symlinks.
+#SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="mega", MODE="0666"

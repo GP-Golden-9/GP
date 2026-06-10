@@ -19,7 +19,7 @@ import math
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
-from std_msgs.msg import String, Float32, Int32MultiArray
+from std_msgs.msg import String, Float32, Int32MultiArray, Bool
 from sensor_msgs.msg import Imu
 import serial
 import time
@@ -40,10 +40,18 @@ class Robot2Bridge(Node):
         super().__init__('robot2_bridge')
 
         # ── Parameters ──
-        self.declare_parameter('serial_port', '/dev/ttyUSB0')
+        # /dev/mega is a udev symlink (systemd/99-gp-serial.rules) that survives
+        # USB enumeration order changes; raw ttyUSB* names are fallbacks only.
+        self.declare_parameter('serial_port', '/dev/mega')
         self.declare_parameter('baud_rate', 115200)
         self.declare_parameter('manual_timeout', 0.5)
         self.declare_parameter('max_linear_speed', 0.5)
+        # Keepalive: firmware stops motors after WATCHDOG_MS (1 s) of serial
+        # silence, so a non-stop command must be re-sent periodically — but
+        # ONLY while fresh Twists keep arriving (deadman), otherwise a dead
+        # commander would leave the robot driving forever.
+        self.declare_parameter('keepalive_period', 0.3)
+        self.declare_parameter('deadman_timeout', 0.8)
 
         # ── State ──
         self.arduino = None
@@ -52,6 +60,10 @@ class Robot2Bridge(Node):
         self.manual_last_time = time.time()
         self.pwm_speed = 180
         self.last_cmd = 'S'
+        self.last_motion = 'S'          # last F/B/L/R/S actually sent
+        self.last_twist_time = 0.0      # monotonic time of last accepted Twist
+        self.estop = False
+        self._serial_lock = threading.Lock()
 
         # ── Connect to Arduino ──
         self._connect_arduino()
@@ -60,6 +72,11 @@ class Robot2Bridge(Node):
         self.create_subscription(Twist, '/cmd_vel', self._auto_cb, 10)
         self.create_subscription(Twist, '/manual_cmd', self._manual_cb, 10)
         self.create_subscription(Float32, '/set_speed', self._speed_cb, 10)
+        self.create_subscription(Bool, '/emergency_stop', self._estop_cb, 10)
+        self.create_subscription(String, '/accessory_cmd', self._accessory_cb, 10)
+
+        # ── Accessory state (pump / servo, firmware v5) ──
+        self.accessory_pub = self.create_publisher(String, '/accessory_state', 10)
 
         # ── Publishers ──
         self.status_pub = self.create_publisher(String, '/motor_status', 10)
@@ -68,6 +85,7 @@ class Robot2Bridge(Node):
 
         # ── Timers ──
         self.create_timer(0.1, self._check_manual_timeout)
+        self.create_timer(self.get_parameter('keepalive_period').value, self._keepalive)
         # Note: No _poll_status timer — Robot 2 firmware streams D: packets
         # at 50 Hz automatically. Sending '?' would trigger printHelp() and
         # flood the serial buffer with junk text.
@@ -85,7 +103,8 @@ class Robot2Bridge(Node):
     def _connect_arduino(self):
         port = self.get_parameter('serial_port').value
         baud = self.get_parameter('baud_rate').value
-        candidates = [port, '/dev/ttyACM0', '/dev/ttyUSB0', '/dev/ttyUSB1']
+        candidates = list(dict.fromkeys(
+            [port, '/dev/mega', '/dev/ttyUSB0', '/dev/ttyACM0', '/dev/ttyUSB1']))
 
         for p in candidates:
             try:
@@ -110,17 +129,37 @@ class Robot2Bridge(Node):
     # SERIAL COMMUNICATION
     # ═══════════════════════════════════════
     def _send(self, cmd: str):
-        """Send a command to the Arduino."""
+        """Send a command to the Arduino (thread-safe)."""
         if not (self.arduino and self.arduino.is_open):
             return False
         try:
-            self.arduino.write(f'{cmd}\n'.encode())
+            with self._serial_lock:
+                self.arduino.write(f'{cmd}\n'.encode())
             self.last_cmd = cmd
+            if cmd in ('F', 'B', 'L', 'R', 'S'):
+                self.last_motion = cmd
             return True
         except Exception as e:
             self.get_logger().error(f'Serial write error: {e}')
             self.connected = False
             return False
+
+    def _keepalive(self):
+        """Re-send the active motion command while the commander is alive.
+
+        Layered safety:
+          1. fresh Twists arriving  → re-send last motion (feeds firmware watchdog)
+          2. commander went silent  → send explicit 'S' once (deadman stop)
+          3. this process dies      → firmware watchdog stops motors in 1 s
+        """
+        if self.estop or self.last_motion == 'S':
+            return
+        deadman = self.get_parameter('deadman_timeout').value
+        if time.monotonic() - self.last_twist_time <= deadman:
+            self._send(self.last_motion)
+        else:
+            self.get_logger().warn('Deadman: commander silent — stopping')
+            self._send('S')
 
     def _poll_status(self):
         """Periodically send '?' to request STS: data (old firmware compatibility)."""
@@ -142,6 +181,11 @@ class Robot2Bridge(Node):
                 elif line.startswith('STS:'):
                     # Old firmware: STS:speed,estop,enc1,enc2,enc3,enc4
                     self._parse_sts_data(line)
+                elif line.startswith(('OK:', 'ERR:')):
+                    # v5 firmware command ACKs (pump/servo/e-stop) → dashboard
+                    self.accessory_pub.publish(String(data=line))
+                    if line.startswith('ERR:'):
+                        self.get_logger().warn(f'Arduino: {line}')
             except Exception:
                 time.sleep(0.1)
 
@@ -231,22 +275,50 @@ class Robot2Bridge(Node):
             return 'L' if angular > 0 else 'R'
 
     def _manual_cb(self, msg: Twist):
+        if self.estop:
+            return
         self.manual_mode = True
         self.manual_last_time = time.time()
+        self.last_twist_time = time.monotonic()
         cmd = self._twist_to_cmd(msg)
-        if cmd != self.last_cmd or cmd == 'S':
+        if cmd != self.last_motion or cmd == 'S':
             self._send(cmd)
 
     def _auto_cb(self, msg: Twist):
-        if self.manual_mode:
+        if self.estop or self.manual_mode:
             return
+        self.last_twist_time = time.monotonic()
         cmd = self._twist_to_cmd(msg)
-        if cmd != self.last_cmd:
+        if cmd != self.last_motion:
             self._send(cmd)
 
     def _speed_cb(self, msg: Float32):
         self.pwm_speed = int(80 + msg.data * 175)
         self._send(f'P{self.pwm_speed}')
+
+    def _estop_cb(self, msg: Bool):
+        """Emergency stop — highest priority, latches until released."""
+        if msg.data:
+            self.estop = True
+            self._send('S')           # works on v4 firmware
+            self._send('E')           # hard-brake + latch on v5 firmware (ignored by v4)
+            self._send('U0')          # pump off on v5 firmware (ignored by v4)
+            self.get_logger().warn('EMERGENCY STOP ENGAGED')
+        else:
+            self.estop = False
+            self._send('X')           # release latch on v5 firmware (ignored by v4)
+            self.get_logger().info('Emergency stop released')
+
+    def _accessory_cb(self, msg: String):
+        """Forward pump/servo commands (v5 firmware): 'U1', 'U0', 'A<deg>'."""
+        cmd = msg.data.strip()
+        if self.estop and cmd != 'U0':
+            self.get_logger().warn(f'Accessory cmd {cmd!r} blocked by e-stop')
+            return
+        if not cmd or cmd[0] not in ('U', 'A'):
+            self.get_logger().warn(f'Unknown accessory cmd: {cmd!r}')
+            return
+        self._send(cmd)
 
     def _check_manual_timeout(self):
         if self.manual_mode:
