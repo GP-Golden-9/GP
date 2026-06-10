@@ -78,10 +78,10 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     app.setStyle('Fusion')                 # respects stylesheets consistently
-    from views import theme
+    from ui import theme
     app.setStyleSheet(theme.QSS)
 
-    from views.main_window import MainWindow
+    from ui.main_window import MainWindow
     win = MainWindow(cfg, yolo_manager=yolo, run_id=run_id)
     theme.enable_dark_titlebar(win)
     win.showMaximized()

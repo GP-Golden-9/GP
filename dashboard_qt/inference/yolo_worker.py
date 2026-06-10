@@ -86,14 +86,22 @@ def _child_main(in_q: mp.Queue, out_q: mp.Queue, model_path: str) -> None:
             results = model(frame, verbose=False)
             annotated = results[0].plot()
 
-            # (label, confidence) pairs — feeds the alert engine
+            # detection dicts with normalized bbox geometry — the console
+            # uses label/conf for alerts and cx/h to PROJECT the detection
+            # onto the shared map (bearing from cx + FOV, range from h)
             detections = []
             boxes = getattr(results[0], 'boxes', None)
             names = getattr(results[0], 'names', None) or {}
             if boxes is not None and len(boxes) > 0:
-                for cls_id, conf in zip(boxes.cls.tolist(), boxes.conf.tolist()):
-                    detections.append((str(names.get(int(cls_id), int(cls_id))),
-                                       float(conf)))
+                xywhn = boxes.xywhn.tolist()
+                for (bx, by, bw, bh), cls_id, conf in zip(
+                        xywhn, boxes.cls.tolist(), boxes.conf.tolist()):
+                    detections.append({
+                        'label': str(names.get(int(cls_id), int(cls_id))),
+                        'conf': float(conf),
+                        'cx': float(bx), 'cy': float(by),
+                        'w': float(bw), 'h': float(bh),
+                    })
 
             ok, buf = cv2.imencode('.jpg', annotated,
                                    [int(cv2.IMWRITE_JPEG_QUALITY), 70])
