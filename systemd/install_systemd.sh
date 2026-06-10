@@ -17,11 +17,13 @@ echo "Installing udev serial rules…"
 sudo cp "$HERE/99-gp-serial.rules" /etc/udev/rules.d/
 sudo udevadm control --reload-rules && sudo udevadm trigger
 
-echo "Installing units for $ROBOT (repo: $GP_DIR)…"
+RUN_USER="$(stat -c %U "$GP_DIR")"
+echo "Installing units for $ROBOT (repo: $GP_DIR, user: $RUN_USER)…"
 for unit in "$HERE/$ROBOT"/*.service; do
     name="$(basename "$unit")"
-    # Rewrite the default repo path if this checkout lives elsewhere
-    sed "s|/home/pi/GP|$GP_DIR|g" "$unit" | sudo tee "/etc/systemd/system/$name" >/dev/null
+    # Rewrite the default repo path AND service user for this checkout
+    sed -e "s|/home/pi/GP|$GP_DIR|g" -e "s|^User=pi$|User=$RUN_USER|" \
+        "$unit" | sudo tee "/etc/systemd/system/$name" >/dev/null
     echo "  installed $name"
 done
 

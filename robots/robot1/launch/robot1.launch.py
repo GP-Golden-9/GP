@@ -80,6 +80,29 @@ def generate_launch_description():
             }],
         ),
 
+        # Laser odometry (rf2o, built in ~/ros2_ws) — scan-flow odometry
+        # publishing /odom + the odom->base_link TF. Replaces the static
+        # identity TF: slam_toolbox now gets real motion input, which is
+        # THE community fix for doubled/smeared walls on an A1M8 with no
+        # encoders (docs/design_notes/rplidar_a1m8_map_quality_report.md).
+        Node(
+            package='rf2o_laser_odometry',
+            executable='rf2o_laser_odometry_node',
+            name='rf2o_laser_odometry',
+            output='screen',
+            respawn=True,
+            respawn_delay=2.0,
+            parameters=[{
+                'laser_scan_topic': '/scan',
+                'odom_topic': '/odom',
+                'publish_tf': True,
+                'base_frame_id': 'base_link',
+                'odom_frame_id': 'odom',
+                'init_pose_from_topic': '',   # start at origin, no GT topic
+                'freq': 10.0,
+            }],
+        ),
+
         # SLAM (existing launch file in mapping/)
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(

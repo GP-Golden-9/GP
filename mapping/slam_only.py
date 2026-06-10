@@ -13,17 +13,9 @@ def generate_launch_description():
 
     ld = LaunchDescription()
 
-    # TF: odom -> base_link
-    ld.add_action(Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        arguments=['--x', '0', '--y', '0', '--z', '0',
-                   '--roll', '0', '--pitch', '0', '--yaw', '0',
-                   '--frame-id', 'odom', '--child-frame-id', 'base_link'],
-        output='log',
-        respawn=True,
-        respawn_delay=2.0
-    ))
+    # odom -> base_link comes from rf2o laser odometry (robot1.launch.py).
+    # The static identity TF that used to live here would FIGHT rf2o's
+    # dynamic transform — never publish both.
 
     # TF: base_link -> laser
     ld.add_action(Node(
