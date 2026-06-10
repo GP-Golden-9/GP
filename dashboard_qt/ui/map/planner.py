@@ -44,16 +44,29 @@ def _dilate(mask: np.ndarray, steps: int) -> np.ndarray:
     return m
 
 
-def build_costmap(grid: np.ndarray, res: float) -> tuple[np.ndarray, np.ndarray]:
-    """→ (blocked bool HxW, soft_cost float HxW)."""
+def build_costmap(grid: np.ndarray, res: float,
+                  hard_radius_m: float | None = None,
+                  soft_extra_m: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+    """→ (blocked bool HxW, soft_cost float HxW).
+
+    ``hard_radius_m`` overrides the default circular inflation (use the
+    robot's half-width + margin). ``soft_extra_m`` widens the soft rings so
+    an asymmetric body (e.g. robot1's 30 cm rear overhang) is priced away
+    from walls up to its CIRCUMSCRIBED radius without hard-blocking
+    doorways the inscribed body fits through."""
     occ = grid > OCC_THRESHOLD
     unknown = grid < 0
-    hard_steps = max(1, math.ceil((ROBOT_RADIUS_M + HARD_MARGIN_M) / res))
+    radius = (ROBOT_RADIUS_M + HARD_MARGIN_M
+              if hard_radius_m is None else hard_radius_m)
+    hard_steps = max(1, math.ceil(radius / res))
     blocked = _dilate(occ, hard_steps) | unknown
 
     soft = np.zeros(grid.shape, dtype=np.float32)
     ring_mask = blocked.copy()
-    for steps, cost in SOFT_RINGS:
+    rings = list(SOFT_RINGS)
+    if soft_extra_m > 0:
+        rings.append((max(1, math.ceil(soft_extra_m / res)), 3.0))
+    for steps, cost in rings:
         grown = _dilate(ring_mask, steps)
         soft[grown & ~ring_mask] += cost
         ring_mask = grown
@@ -127,12 +140,14 @@ def _simplify(blocked: np.ndarray, cells: list) -> list:
 
 def plan_path(grid: np.ndarray, res: float, ox: float, oy: float,
               start_xy: tuple[float, float],
-              goal_xy: tuple[float, float]) -> list[tuple[float, float]] | None:
+              goal_xy: tuple[float, float],
+              hard_radius_m: float | None = None,
+              soft_extra_m: float = 0.0) -> list[tuple[float, float]] | None:
     """A* route start→goal in world meters. None when no safe path exists.
 
     Returns sparse waypoints (goal included, start excluded). Complexity is
     fine for arena-scale maps (≤ ~200×200 cells in a few tens of ms)."""
-    blocked, soft = build_costmap(grid, res)
+    blocked, soft = build_costmap(grid, res, hard_radius_m, soft_extra_m)
     snap_cells = max(1, int(SNAP_M / res))
     start = _snap_free(blocked, _to_cell(*start_xy, ox, oy, res, grid.shape),
                        snap_cells)

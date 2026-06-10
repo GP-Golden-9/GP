@@ -22,10 +22,31 @@ class RobotProfile:
     legacy_video_port: int = 0
     http: Dict = field(default_factory=dict)
     gas: Dict = field(default_factory=dict)
+    footprint: Dict = field(default_factory=dict)
 
     @property
     def is_esp32(self) -> bool:
         return self.kind == 'esp32'
+
+    @property
+    def plan_hard_radius_m(self) -> float | None:
+        """Half-width + safety margin → A* hard inflation, or None for the
+        planner default when the robot has no measured footprint."""
+        hw = self.footprint.get('half_width_m')
+        return (hw + 0.05) if hw else None
+
+    @property
+    def plan_soft_extra_m(self) -> float:
+        """Extra soft-cost reach out to the circumscribed radius so the
+        long rear overhang is priced away from walls without hard-blocking
+        doorways the body actually fits through."""
+        hw = self.footprint.get('half_width_m')
+        rear = self.footprint.get('rear_extent_m')
+        if not hw or not rear:
+            return 0.0
+        circumscribed = (hw ** 2 + rear ** 2) ** 0.5
+        hard = hw + 0.05
+        return max(0.0, circumscribed - hard)
 
 
 @dataclass
@@ -70,6 +91,7 @@ def load_app_config(fleet_path: str | None = None) -> AppConfig:
             legacy_video_port=get_path(rc, 'camera.legacy_port', 0),
             http=rc.get('http', {}),
             gas=rc.get('gas', {}),
+            footprint=rc.get('footprint', {}),
         ))
 
     d = fleet.get('dashboard', {})

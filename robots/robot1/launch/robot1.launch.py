@@ -110,6 +110,7 @@ def generate_launch_description():
         ),
 
         _py('navigation/robot1_bridge.py'),
+        _py('navigation/robot1_goto.py'),
         _py('navigation/simple_explorer.py'),
         _py('robots/robot1/nodes/scan_watchdog.py'),
         _py('gateway/gateway_node.py', '--config',

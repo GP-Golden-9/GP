@@ -37,3 +37,27 @@ explorer:
   corridor_width_m: 0.65
   speed_mps: 0.06
   turn_speed_rps: 0.30
+
+# Measured chassis (2026-06-11): 40 cm long x 30 cm wide. The RPLidar A1
+# (~10 cm body) sits 5 cm behind the front edge and 10 cm from each side
+# rail -> its CENTER (= base_link origin, laser at identity translation)
+# is 0.10 m behind the front edge and laterally centered. The lidar's 0
+# deg axis faces the chassis REAR -> laser frame is yawed pi vs base_link.
+footprint:
+  length_m: 0.40
+  width_m: 0.30
+  forward_extent_m: 0.10     # base_link -> front edge
+  rear_extent_m: 0.30        # base_link -> rear edge (the long overhang!)
+  half_width_m: 0.15
+  laser_yaw_rad: 3.14159265  # base_link -> laser rotation
+
+goto:
+  max_linear_mps: 0.15
+  max_angular_rps: 0.40
+  goal_tolerance_m: 0.12
+  # scan-based safety (all distances from base_link):
+  stop_ahead_m: 0.35         # forward extent 0.10 + 0.25 braking margin
+  resume_ahead_m: 0.45       # hysteresis so it doesn't stutter at the edge
+  corridor_half_m: 0.21      # half width 0.15 + 0.06 lateral margin
+  rotate_clear_m: 0.38       # circumscribed 0.335 + margin: rear swing room
+  blocked_abort_s: 6.0       # obstacle persists this long -> goal aborted

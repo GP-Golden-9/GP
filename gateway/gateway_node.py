@@ -89,6 +89,11 @@ class GatewayNode(Node):
         }
         self._last_scan_fwd = 0.0
         self._last_map_fwd = 0.0
+        # laser frame yaw vs base_link (pi on robot1: A1 zero axis faces
+        # rear). Added to a0 so tele.scan angles are BASE-frame — the
+        # console renders scan points at robot pose + angle directly.
+        self._laser_yaw = float(
+            cfg.get('footprint', {}).get('laser_yaw_rad', 0.0))
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -195,7 +200,7 @@ class GatewayNode(Node):
         self._last_scan_fwd = now
         ranges = array('f', (0.0 if r is None else float(r) for r in msg.ranges))
         self.server.publish('telemetry', ch.TELE_SCAN, {
-            'a0': msg.angle_min,
+            'a0': msg.angle_min + self._laser_yaw,   # base-frame angles
             'da': msg.angle_increment,
             'rmin': msg.range_min,
             'rmax': msg.range_max,

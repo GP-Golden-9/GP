@@ -77,7 +77,20 @@ class _RobotLayer:
     label: QGraphicsSimpleTextItem
     trail: QGraphicsPathItem
     points: list = field(default_factory=list)
-    pose: tuple = (0.0, 0.0, 0.0)
+    pose: tuple = (0.0, 0.0, 0.0)      # raw truth (planning, goals)
+    disp: tuple | None = None          # smoothed pose (drawing only)
+    footprint: tuple | None = None     # (fwd, rear, half_width) meters
+
+
+# Display smoothing: poses arrive at ~7-20 Hz in discrete steps; blending
+# the DRAWN pose toward the latest truth removes the jerky arrow without
+# touching the raw pose used for planning and missions.
+POSE_SMOOTH_ALPHA = 0.35
+
+
+def _blend_angle(a: float, b: float, alpha: float) -> float:
+    d = math.atan2(math.sin(b - a), math.cos(b - a))
+    return a + alpha * d
 
 
 @dataclass
@@ -513,24 +526,65 @@ class MapWidget(QWidget):
         trail_rgba = theme.TRAIL_ACTIVE if active else theme.TRAIL_OTHER
         layer.trail.setPen(QPen(QColor(*trail_rgba), 0.03))
 
+    def set_footprint(self, robot_id: str, fp: dict) -> None:
+        """Give a robot its measured body outline (drawn at true scale)."""
+        fwd = fp.get('forward_extent_m')
+        rear = fp.get('rear_extent_m')
+        half = fp.get('half_width_m')
+        if fwd and rear and half:
+            self._layer(robot_id).footprint = (fwd, rear, half)
+
     def update_robot(self, robot_id: str, x: float, y: float, th: float) -> None:
         layer = self._layer(robot_id)
         if layer.pose == (0.0, 0.0, 0.0) and not layer.points:
             self._style_robot(robot_id, layer)
         layer.pose = (x, y, th)
 
-        r = 0.115
+        # drawn pose chases the raw pose — smooth motion, zero added lag
+        # for logic (raw pose above is what planning reads)
+        if layer.disp is None:
+            layer.disp = (x, y, th)
+        else:
+            dx, dy, dth = layer.disp
+            # teleports (SET POSE, SLAM reset) snap instead of gliding
+            if math.hypot(x - dx, y - dy) > 0.8 or \
+                    abs(math.atan2(math.sin(th - dth),
+                                   math.cos(th - dth))) > 1.5:
+                layer.disp = (x, y, th)
+            else:
+                a = POSE_SMOOTH_ALPHA
+                layer.disp = (dx + a * (x - dx), dy + a * (y - dy),
+                              _blend_angle(dth, th, a))
+        sx, sy, sth = layer.disp
+
         path = QPainterPath()
-        path.addEllipse(QPointF(x, y), r, r)
-        tip = QPointF(x + (r + 0.13) * math.cos(th), y + (r + 0.13) * math.sin(th))
-        path.moveTo(x, y); path.lineTo(tip)
+        cos_t, sin_t = math.cos(sth), math.sin(sth)
+        if layer.footprint:
+            # true-scale chassis rectangle (base_link = lidar center)
+            fwd, rear, half = layer.footprint
+            corners = ((fwd, half), (fwd, -half), (-rear, -half), (-rear, half))
+            pts = [QPointF(sx + bx * cos_t - by * sin_t,
+                           sy + bx * sin_t + by * cos_t) for bx, by in corners]
+            path.moveTo(pts[0])
+            for p in pts[1:]:
+                path.lineTo(p)
+            path.closeSubpath()
+            r = 0.06
+            path.addEllipse(QPointF(sx, sy), r, r)   # lidar position
+            tip_len = fwd + 0.10
+        else:
+            r = 0.115
+            path.addEllipse(QPointF(sx, sy), r, r)
+            tip_len = r + 0.13
+        tip = QPointF(sx + tip_len * cos_t, sy + tip_len * sin_t)
+        path.moveTo(sx, sy); path.lineTo(tip)
         for side in (-1, 1):
-            wing = th + side * 2.7
+            wing = sth + side * 2.7
             path.lineTo(QPointF(tip.x() + 0.07 * math.cos(wing),
                                 tip.y() + 0.07 * math.sin(wing)))
             path.moveTo(tip)
         layer.body.setPath(path)
-        layer.label.setPos(x + 0.16, y + 0.16)
+        layer.label.setPos(sx + 0.16, sy + 0.16)
 
         if (not layer.points or
                 math.hypot(x - layer.points[-1][0], y - layer.points[-1][1])

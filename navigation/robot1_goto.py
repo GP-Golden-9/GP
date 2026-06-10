@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""Robot 1 — GoTo navigator with LiDAR collision guard.
+
+Point-to-point controller for the mapper. Unlike robot2's (odometry-only,
+no sensor), this one navigates in the MAP frame and refuses to hit things:
+
+  pose    map->base_link TF (slam, drift-corrected) — goals from the
+          dashboard arrive in this same frame (robot1 IS the shared frame)
+  safety  every /scan is checked against the measured footprint
+          (config/robot1.yaml `footprint`/`goto`):
+            DRIVING   obstacle inside the forward corridor -> hard stop,
+                      resume only when clear past a hysteresis band
+            ROTATING  anything inside the rotation circle (the 30 cm rear
+                      overhang sweeps 0.34 m!) -> rotation blocked
+          blocked longer than `blocked_abort_s` -> goal aborted loudly
+
+Subscribes: /goal_pose /scan /manual_cmd /emergency_stop /explore_enable
+Publishes:  /cmd_vel /nav_status
+
+The dashboard's A* mission feeds one waypoint at a time; nav_status uses
+the same vocabulary as robot2_goto (IDLE/ROTATING/DRIVING/ARRIVED) plus
+BLOCKED:<why> so the operator sees exactly what the guard is doing.
+"""
+
+from __future__ import annotations
+
+import math
+import os
+import sys
+
+import numpy as np
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import PoseStamped, Twist
+from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Bool, String
+from tf2_ros import TransformException
+from tf2_ros.buffer import Buffer
+from tf2_ros.transform_listener import TransformListener
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                '..', 'common'))
+from gpcore.config import get_path, load_config          # noqa: E402
+
+ANGLE_TOLERANCE = 0.15        # rad — aligned enough to drive
+KP_ANGLE = 1.2
+KP_DISTANCE = 0.5
+CONTROL_HZ = 20.0
+
+STATE_IDLE = 'IDLE'
+STATE_ROTATING = 'ROTATING'
+STATE_DRIVING = 'DRIVING'
+STATE_ARRIVED = 'ARRIVED'
+STATE_BLOCKED = 'BLOCKED'
+
+
+class Robot1GoTo(Node):
+    def __init__(self, cfg: dict):
+        super().__init__('robot1_goto')
+
+        self.max_lin = get_path(cfg, 'goto.max_linear_mps', 0.15)
+        self.max_ang = get_path(cfg, 'goto.max_angular_rps', 0.40)
+        self.goal_tol = get_path(cfg, 'goto.goal_tolerance_m', 0.12)
+        self.stop_ahead = get_path(cfg, 'goto.stop_ahead_m', 0.35)
+        self.resume_ahead = get_path(cfg, 'goto.resume_ahead_m', 0.45)
+        self.corridor_half = get_path(cfg, 'goto.corridor_half_m', 0.21)
+        self.rotate_clear = get_path(cfg, 'goto.rotate_clear_m', 0.38)
+        self.blocked_abort_s = get_path(cfg, 'goto.blocked_abort_s', 6.0)
+        self.laser_yaw = get_path(cfg, 'footprint.laser_yaw_rad', 0.0)
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        self.create_subscription(PoseStamped, '/goal_pose', self._goal_cb, 10)
+        self.create_subscription(LaserScan, '/scan', self._scan_cb, 5)
+        self.create_subscription(Twist, '/manual_cmd', self._manual_cb, 10)
+        self.create_subscription(Bool, '/emergency_stop', self._estop_cb, 10)
+        self.create_subscription(Bool, '/explore_enable', self._explore_cb, 5)
+
+        self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.status_pub = self.create_publisher(String, '/nav_status', 10)
+        self.log_pub = self.create_publisher(String, '/robot_log', 10)
+
+        self.goal = None              # (x, y) in map frame
+        self.estop = False
+        self.exploring = False
+        self.state = STATE_IDLE
+        self._front_blocked = False   # with hysteresis
+        self._rot_blocked = False
+        self._blocked_since = None
+        self._last_status = ''
+
+        self.create_timer(1.0 / CONTROL_HZ, self._navigate)
+        self._status(STATE_IDLE)
+        self.get_logger().info(
+            f'robot1 goto up — stop_ahead={self.stop_ahead} '
+            f'corridor=±{self.corridor_half} rotate_clear={self.rotate_clear}')
+
+    # ── pose ─────────────────────────────────────────────────────────────
+    def _pose(self):
+        try:
+            t = self.tf_buffer.lookup_transform('map', 'base_link',
+                                                rclpy.time.Time())
+        except TransformException:
+            return None
+        q = t.transform.rotation
+        siny = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        return (t.transform.translation.x, t.transform.translation.y,
+                math.atan2(siny, cosy))
+
+    # ── callbacks ────────────────────────────────────────────────────────
+    def _goal_cb(self, msg: PoseStamped):
+        if self.estop:
+            return
+        self.goal = (msg.pose.position.x, msg.pose.position.y)
+        self._blocked_since = None
+        self.state = STATE_ROTATING
+        self.get_logger().info(f'goal ({self.goal[0]:.2f}, {self.goal[1]:.2f})')
+
+    def _scan_cb(self, msg: LaserScan):
+        """Project every return into the BASE frame and test the footprint
+        corridors. Runs at scan rate (~7 Hz) — cheap numpy, no copies."""
+        n = len(msg.ranges)
+        if n == 0:
+            return
+        r = np.asarray(msg.ranges, dtype=np.float32)
+        ang = (msg.angle_min + self.laser_yaw
+               + np.arange(n, dtype=np.float32) * msg.angle_increment)
+        valid = np.isfinite(r) & (r > max(0.05, msg.range_min)) & (r < 8.0)
+        x = r[valid] * np.cos(ang[valid])      # +x = robot forward
+        y = r[valid] * np.sin(ang[valid])
+
+        in_corridor = (np.abs(y) < self.corridor_half) & (x > 0.0)
+        ahead = x[in_corridor]
+        nearest = float(ahead.min()) if ahead.size else 99.0
+        if self._front_blocked:
+            self._front_blocked = nearest < self.resume_ahead   # hysteresis
+        else:
+            self._front_blocked = nearest < self.stop_ahead
+
+        d2 = x * x + y * y
+        self._rot_blocked = bool((d2 < self.rotate_clear ** 2).any())
+
+    def _manual_cb(self, _msg: Twist):
+        if self.goal is not None:
+            self._cancel('manual override')
+
+    def _estop_cb(self, msg: Bool):
+        self.estop = bool(msg.data)
+        if self.estop and self.goal is not None:
+            self._cancel('e-stop')
+
+    def _explore_cb(self, msg: Bool):
+        self.exploring = bool(msg.data)
+        if self.exploring and self.goal is not None:
+            self._cancel('explorer enabled')
+
+    # ── control loop ─────────────────────────────────────────────────────
+    def _navigate(self):
+        if self.goal is None or self.estop or self.exploring:
+            return
+        pose = self._pose()
+        if pose is None:
+            self._status('IDLE')      # no TF yet — slam still starting
+            return
+        px, py, pth = pose
+        dx, dy = self.goal[0] - px, self.goal[1] - py
+        distance = math.hypot(dx, dy)
+
+        if distance < self.goal_tol:
+            self._stop()
+            self.state = STATE_ARRIVED
+            self._status(f'ARRIVED:{self.goal[0]:.2f},{self.goal[1]:.2f}')
+            self.get_logger().info('arrived')
+            self.goal = None
+            return
+
+        angle_err = math.atan2(dy, dx) - pth
+        angle_err = math.atan2(math.sin(angle_err), math.cos(angle_err))
+        rotating = abs(angle_err) > ANGLE_TOLERANCE
+
+        # ── collision guard (the part robot2 doesn't have) ──
+        blocked_reason = None
+        if rotating and self._rot_blocked:
+            blocked_reason = 'ROTATE'
+        elif not rotating and self._front_blocked:
+            blocked_reason = 'AHEAD'
+
+        if blocked_reason:
+            self._stop()
+            now = self.get_clock().now().nanoseconds / 1e9
+            if self._blocked_since is None:
+                self._blocked_since = now
+                self._announce(f'GOTO: path blocked ({blocked_reason}) — '
+                               'holding')
+            elif now - self._blocked_since > self.blocked_abort_s:
+                self._announce('GOTO: blocked too long — goal aborted')
+                self._cancel('blocked')
+                return
+            self.state = STATE_BLOCKED
+            self._status(f'BLOCKED:{blocked_reason}')
+            return
+        if self._blocked_since is not None:
+            self._announce('GOTO: path clear — resuming')
+            self._blocked_since = None
+
+        cmd = Twist()
+        if rotating:
+            self.state = STATE_ROTATING
+            cmd.angular.z = max(-self.max_ang,
+                                min(self.max_ang, KP_ANGLE * angle_err))
+            self._status(f'ROTATING:{self.goal[0]:.2f},{self.goal[1]:.2f}')
+        else:
+            self.state = STATE_DRIVING
+            cmd.linear.x = min(self.max_lin, KP_DISTANCE * distance)
+            cmd.angular.z = max(-self.max_ang * 0.5,
+                                min(self.max_ang * 0.5,
+                                    KP_ANGLE * 0.5 * angle_err))
+            self._status(f'DRIVING:{distance:.2f}m')
+        self.cmd_pub.publish(cmd)
+
+    # ── helpers ──────────────────────────────────────────────────────────
+    def _stop(self):
+        self.cmd_pub.publish(Twist())
+
+    def _cancel(self, why: str):
+        self.goal = None
+        self.state = STATE_IDLE
+        self._blocked_since = None
+        self._stop()
+        self._status(STATE_IDLE)
+        self.get_logger().info(f'goal cancelled: {why}')
+
+    def _status(self, text: str):
+        if text != self._last_status:
+            self._last_status = text
+            self.status_pub.publish(String(data=text))
+
+    def _announce(self, line: str):
+        self.get_logger().warn(line)
+        self.log_pub.publish(String(data=line))
+
+
+def main(args=None):
+    import argparse
+    ap = argparse.ArgumentParser()
+    default_cfg = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               '..', 'config', 'robot1.yaml')
+    ap.add_argument('--config', default=default_cfg)
+    parsed, ros_args = ap.parse_known_args(args=args)
+    cfg = load_config(parsed.config)
+
+    rclpy.init(args=ros_args)
+    node = Robot1GoTo(cfg)
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node._stop()
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

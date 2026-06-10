@@ -178,6 +178,9 @@ class MainWindow(QMainWindow):
         self.map.goalRequested.connect(self._goal_clicked)
         self.map.posePicked.connect(self._pose_picked)
         self.map.resetMapRequested.connect(self._reset_map_clicked)
+        for prof in self.app_cfg.robots:          # true-scale body outlines
+            if prof.footprint:
+                self.map.set_footprint(prof.id, prof.footprint)
 
         # planner output is executed waypoint-by-waypoint by the mission
         self.mission = MissionExecutor(self._send_goal_world, parent=self)
@@ -375,7 +378,10 @@ class MainWindow(QMainWindow):
             return
         res, ox, oy = self._grid_meta
         t0 = time.monotonic()
-        path = plan_path(self._grid, res, ox, oy, (pose.x, pose.y), (x, y))
+        prof = self.app_cfg.profile(self.active_id)
+        path = plan_path(self._grid, res, ox, oy, (pose.x, pose.y), (x, y),
+                         hard_radius_m=prof.plan_hard_radius_m,
+                         soft_extra_m=prof.plan_soft_extra_m)
         dt_ms = (time.monotonic() - t0) * 1000
         if path is None:
             self.statusBar().showMessage(
