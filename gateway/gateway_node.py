@@ -110,7 +110,7 @@ class GatewayNode(Node):
         s(cmds.CMD_SPEED, self._h_speed)
 
         # ── timers ──
-        self.create_timer(0.01, self._tick_commands)          # 100 Hz – ZMQ cmd poll
+        self.create_timer(0.02, self._tick_commands)          # 50 Hz — ZMQ cmd poll
         self.create_timer(1.0 / TELE_HZ, self._tick_telemetry)
         self.create_timer(1.0 / HEALTH_HZ, self._tick_health)
 
@@ -256,7 +256,7 @@ class GatewayNode(Node):
 
     # ════════ periodic ════════
     def _tick_commands(self):
-        self.server.poll_commands(5)   # 5 ms block — lets ROUTER actually receive
+        self.server.poll_commands(0)   # non-blocking; MultiThreadedExecutor isolates this
         if self.server.deadman_tripped():
             self.pub_manual.publish(Twist())
             self.log.warning('drive deadman tripped — stop sent')
