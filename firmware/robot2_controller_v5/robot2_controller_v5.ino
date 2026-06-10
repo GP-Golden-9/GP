@@ -611,15 +611,39 @@ void printStatus() {
     Serial.println(F("─────────────────────────────────────────────────"));
 }
 
+// Non-blocking line reader: readStringUntil() would stall the 50 Hz loop
+// for up to 1 s on a partial line (serial noise, unplugged mid-byte).
+// Bytes accumulate across loop() iterations; a full line dispatches.
 void handleCommand() {
-    if (!Serial.available()) return;
+    static char lineBuf[32];
+    static uint8_t lineLen = 0;
+    while (Serial.available()) {
+        char c = Serial.read();
+        if (c == '\n' || c == '\r') {
+            if (lineLen > 0) {
+                lineBuf[lineLen] = '\0';
+                processLine(String(lineBuf));
+                lineLen = 0;
+            }
+        } else if (lineLen < sizeof(lineBuf) - 1) {
+            lineBuf[lineLen++] = c;
+        } else {
+            lineLen = 0;                      // oversized garbage → drop line
+        }
+    }
+}
 
-    String input = Serial.readStringUntil('\n');
+void processLine(String input) {
     input.trim();
     if (input.length() == 0) return;
 
     char cmd = toupper(input[0]);
-    lastCmdTime = millis();
+
+    // Diagnostics must NOT feed the watchdog — otherwise a status poller
+    // keeps a half-dead system "alive" and the safety timeout never fires.
+    if (cmd != '?' && cmd != 'H' && cmd != 'I' && cmd != 'V') {
+        lastCmdTime = millis();
+    }
 
     // E-stop gate: while latched, only S / X / U0 / diagnostics are honored
     if (estopActive && (cmd == 'F' || cmd == 'B' || cmd == 'L' || cmd == 'R'

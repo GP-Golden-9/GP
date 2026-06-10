@@ -18,11 +18,16 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
+#include <ArduinoOTA.h>
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 
 #include "config_secrets.h"   // WIFI_SSID / WIFI_PASSWORD — see .template
+
+#ifndef OTA_PASSWORD
+#define OTA_PASSWORD "gp-inspector"   // override in config_secrets.h
+#endif
 
 // ── Pins (verified working, unchanged from v1) ──────────────────────────
 #define ENA 13
@@ -166,6 +171,14 @@ void wifiConnectBlocking() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nWiFi up: " + WiFi.localIP().toString());
     if (MDNS.begin(HOSTNAME)) Serial.println("mDNS: " HOSTNAME ".local");
+    // OTA: reflash over WiFi (Arduino IDE → network port "robot3") —
+    // the inspector may be deployed somewhere you don't want to crawl to.
+    // Motors are stopped during an update for safety.
+    ArduinoOTA.setHostname(HOSTNAME);
+    ArduinoOTA.setPassword(OTA_PASSWORD);
+    ArduinoOTA.onStart([]() { motorStop(); digitalWrite(BUZZER_PIN, LOW); });
+    ArduinoOTA.begin();
+    Serial.println("OTA ready (password protected)");
   } else {
     Serial.println("\nWiFi FAILED — will keep retrying in loop()");
   }
@@ -234,6 +247,7 @@ void loop() {
     }
   } else {
     server.handleClient();
+    ArduinoOTA.handle();
   }
 
   // 2. Command watchdog: the v1 drive-forever bug fix
@@ -250,7 +264,9 @@ void loop() {
     digitalWrite(TRIG_PIN, LOW);  delayMicroseconds(2);
     digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
     digitalWrite(TRIG_PIN, LOW);
-    dist_cm = pulseIn(ECHO_PIN, HIGH, 30000) * 0.034 / 2;
+    // 15 ms timeout = ~2.5 m max range; halves the worst-case time this
+    // blocking read steals from the web server / watchdog loop
+    dist_cm = pulseIn(ECHO_PIN, HIGH, 15000) * 0.034 / 2;
 
     gas_val = analogRead(GAS_PIN);
     if (gas_val > GAS_ALARM_THRESHOLD) {
