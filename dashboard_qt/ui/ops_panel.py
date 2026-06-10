@@ -78,6 +78,7 @@ class OpsPanel(QWidget):
         sl = QVBoxLayout(speed_box)
         row = QHBoxLayout()
         self.speed_slider = QSlider(Qt.Horizontal)
+        self.speed_slider.setFocusPolicy(Qt.NoFocus)
         self.speed_slider.setRange(int(prefs.speed_min * 100),
                                    int(prefs.speed_max * 100))
         self.speed_slider.setValue(int(prefs.speed_default * 100))
@@ -118,6 +119,7 @@ class OpsPanel(QWidget):
         cap.setStyleSheet(f'color:{theme.MUTED}; font-size:9px; font-weight:700;')
         tl.addWidget(cap, 1, 0)
         self.servo_slider = QSlider(Qt.Horizontal)
+        self.servo_slider.setFocusPolicy(Qt.NoFocus)
         self.servo_slider.setRange(10, 170)
         self.servo_slider.setValue(90)
         self.servo_slider.sliderReleased.connect(

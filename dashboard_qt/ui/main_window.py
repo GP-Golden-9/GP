@@ -91,6 +91,7 @@ class MainWindow(QMainWindow):
         self._wire_alerts()
         self._wire_inference()
         self._wire_keyboard_stream()
+        QApplication.instance().installEventFilter(self)
         self._restore_layout()
         self._start()
 
@@ -670,6 +671,17 @@ class MainWindow(QMainWindow):
     # ══════════════════════════════════════════════════════════════════════
     # Keyboard (same 10 Hz stream as the joystick)
     # ══════════════════════════════════════════════════════════════════════
+    def eventFilter(self, obj, e) -> bool:
+        if e.type() == e.Type.KeyPress:
+            if e.key() in KEY_VECTORS or e.key() in (Qt.Key_Escape, Qt.Key_F9, Qt.Key_Space):
+                self.keyPressEvent(e)
+                return True
+        elif e.type() == e.Type.KeyRelease:
+            if e.key() in KEY_VECTORS:
+                self.keyReleaseEvent(e)
+                return True
+        return super().eventFilter(obj, e)
+
     def keyPressEvent(self, e: QKeyEvent) -> None:
         if e.isAutoRepeat():
             return

@@ -93,6 +93,7 @@ class _Canvas(QGraphicsView):
         # scene rect and DRIFT the whole view off-center.
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFocusPolicy(Qt.NoFocus)    # arrow keys must reach MainWindow
         self.scale(120, -120)                  # world: x right, y UP
 
         self.mode = MODE_NAV

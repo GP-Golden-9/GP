@@ -29,6 +29,7 @@ class Joystick(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(170, 170)
+        self.setFocusPolicy(Qt.NoFocus)   # keyboard → MainWindow, not here
         self._knob = QPointF(0.0, 0.0)        # normalized
         self._engaged = False
         self._enabled_logic = True
