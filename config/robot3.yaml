@@ -1,0 +1,24 @@
+# Robot 3 "Gamma" — the Inspector (ESP32, HTTP API, no ROS)
+robot:
+  id: robot3
+  name: Gamma
+  host: robot3.local
+  kind: esp32
+
+http:
+  control_path: /control     # ?dir=F|B|L|R|S
+  telemetry_path: /telemetry # JSON {d,g,x,y,a,rssi,uptime,last_cmd_age}
+  poll_hz: 2
+  timeout_s: 1.0
+
+# ZMQ block required by the config schema; ESP32 exposes none of these.
+zmq:
+  telemetry: 0
+  map: 0
+  cmd: 0
+  health: 0
+  video: 0
+
+gas:
+  alarm_threshold: 1500      # MQ-5 raw ADC value that latches the local buzzer
+  warn_threshold: 800

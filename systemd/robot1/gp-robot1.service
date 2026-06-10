@@ -1,0 +1,19 @@
+[Unit]
+Description=GP Robot1 ROS stack (lidar + slam + bridge + explorer + gateway)
+Requires=gp-preflight.service
+After=gp-preflight.service network-online.target
+
+[Service]
+Type=simple
+User=pi
+Environment=GP_DIR=/home/pi/GP
+WorkingDirectory=/home/pi/GP
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && exec ros2 launch /home/pi/GP/robots/robot1/launch/robot1.launch.py'
+Restart=always
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=10
+MemoryMax=2500M
+
+[Install]
+WantedBy=multi-user.target

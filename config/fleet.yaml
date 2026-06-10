@@ -1,0 +1,16 @@
+# Fleet-level configuration consumed by the operator dashboard.
+fleet:
+  robots:
+    - config: robot1.yaml
+    - config: robot2.yaml
+    - config: robot3.yaml
+  default_robot: robot2
+
+dashboard:
+  drive_stream_hz: 10          # held-key command rate (feeds gateway deadman)
+  speed_min_mps: 0.10
+  speed_max_mps: 0.30
+  speed_default_mps: 0.15
+  turn_rate_rps: 0.5
+  models_dir: ../models        # relative to dashboard_qt/
+  default_model: yolov8n-fire.pt

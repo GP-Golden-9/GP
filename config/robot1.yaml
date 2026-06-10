@@ -1,0 +1,39 @@
+# Robot 1 "Alpha" — the Mapper (Pi 4 + Mega + RPLidar A1)
+robot:
+  id: robot1
+  name: Alpha
+  host: robot.local
+  kind: ros            # ros | esp32
+
+ros:
+  domain_id: 11
+  rosbridge_port: 9090   # legacy dashboard fallback
+
+serial:
+  port: /dev/mega        # udev symlink (systemd/99-gp-serial.rules)
+  baud: 115200
+
+lidar:
+  port: /dev/rplidar
+  min_scan_hz: 3.0       # scan_watchdog restarts the driver below this
+  stall_grace_s: 5.0
+
+zmq:
+  telemetry: 5556
+  map: 5557
+  cmd: 5558
+  health: 5559
+  video: 5560            # unused on robot1 (no camera)
+
+drive:
+  max_linear_mps: 0.5
+  deadman_timeout_s: 0.8
+  keepalive_period_s: 0.3
+
+explorer:
+  front_safe_m: 0.50
+  side_safe_m: 0.40
+  emergency_m: 0.30
+  corridor_width_m: 0.65
+  speed_mps: 0.06
+  turn_speed_rps: 0.30

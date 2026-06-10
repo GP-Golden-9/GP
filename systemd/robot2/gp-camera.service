@@ -1,0 +1,18 @@
+[Unit]
+Description=GP Robot2 camera publisher (independent of the ROS stack)
+After=network-online.target
+# Deliberately NOT bound to gp-robot2.service: video must survive ROS crashes
+# and a camera fault must never take down robot control.
+
+[Service]
+Type=simple
+User=pi
+Environment=GP_DIR=/home/pi/GP
+WorkingDirectory=/home/pi/GP
+ExecStart=/usr/bin/python3 /home/pi/GP/robots/robot2/nodes/camera_pub.py --config /home/pi/GP/config/robot2.yaml
+Restart=always
+RestartSec=2
+MemoryMax=200M
+
+[Install]
+WantedBy=multi-user.target

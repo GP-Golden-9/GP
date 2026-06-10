@@ -1,0 +1,14 @@
+[Unit]
+Description=GP Robot1 preflight checks (serial names, disk, power, deps)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=pi
+Environment=GP_DIR=/home/pi/GP
+ExecStart=/bin/bash /home/pi/GP/robots/robot1/scripts/preflight.sh
+
+[Install]
+WantedBy=multi-user.target

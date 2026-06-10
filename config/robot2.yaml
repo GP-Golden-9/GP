@@ -1,0 +1,60 @@
+# Robot 2 "Beta" — the Intervener (Pi 3B+ + Mega + GY-87 + camera + pump + arm)
+robot:
+  id: robot2
+  name: Beta
+  host: robot2.local
+  kind: ros
+
+ros:
+  domain_id: 12
+  rosbridge_port: 9090
+
+serial:
+  port: /dev/mega
+  baud: 115200
+
+zmq:
+  telemetry: 5556
+  map: 5557              # robot2 publishes no map; port reserved for symmetry
+  cmd: 5558
+  health: 5559
+  video: 5560
+
+camera:
+  device: 0
+  width: 640
+  height: 480
+  fps: 15                # Pi 3B+ headroom; 30 was saturating one core
+  jpeg_quality: 35
+  legacy_port: 5555      # also publish raw JPEG for the NiceGUI dashboard
+                         # during migration; set to 0 to disable
+
+drive:
+  wheel_diameter_m: 0.065   # ⚠ measure on the real robot before trusting odom
+  ticks_per_rev: 330
+  wheel_base_m: 0.23
+  encoder_heading_weight: 0.3
+  max_linear_mps: 0.5
+  deadman_timeout_s: 0.8
+  keepalive_period_s: 0.3
+
+goto:
+  goal_tolerance_m: 0.12
+  angle_tolerance_rad: 0.15
+  max_linear_mps: 0.15
+  max_angular_rps: 0.40
+  kp_distance: 0.5
+  kp_angle: 1.2
+
+accessories:
+  pump:
+    pin: 7               # firmware v5
+    active_low: true     # relay module is H/L trigger — verify jumper
+    max_run_ms: 5000     # firmware-enforced auto-off
+    cooldown_ms: 1000
+  servo:
+    pin: 5
+    min_deg: 10
+    max_deg: 170
+    slew_dps: 120
+    home_deg: 90
