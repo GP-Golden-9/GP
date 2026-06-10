@@ -87,6 +87,25 @@ def decode(raw: bytes) -> Envelope:
     return Envelope(**{k: obj[k] for k in _REQUIRED_FIELDS})
 
 
+def pack_with_blob(env: Envelope, blob: bytes) -> bytes:
+    """Pack envelope + binary blob into ONE message (4-byte BE header length).
+
+    Single-part on purpose: ZMQ CONFLATE (latest-wins, used for video) aborts
+    the process on multipart messages — libzmq asserts in fq.cpp.
+    """
+    head = encode(env)
+    return len(head).to_bytes(4, 'big') + head + blob
+
+
+def unpack_with_blob(raw: bytes) -> tuple[Envelope, bytes]:
+    if len(raw) < 4:
+        raise ProtocolError('blob message shorter than header')
+    n = int.from_bytes(raw[:4], 'big')
+    if 4 + n > len(raw):
+        raise ProtocolError('blob header length exceeds message size')
+    return decode(raw[4:4 + n]), raw[4 + n:]
+
+
 class SeqTracker:
     """Detects gaps/duplicates in a per-channel sequence stream."""
 

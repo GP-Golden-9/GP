@@ -58,3 +58,20 @@ def test_seq_tracker_counts_gaps_and_duplicates():
 def test_envelope_age():
     env = make_envelope('x', {}, seq=0, run_id='r', src='s', t_mono=100.0)
     assert env.age_s(now_mono=100.5) == pytest.approx(0.5)
+
+
+def test_pack_with_blob_roundtrip():
+    from gpcore.protocol.envelope import pack_with_blob, unpack_with_blob
+    env = make_envelope('video.meta', {'frame_id': 7}, seq=7, run_id='r', src='cam')
+    blob = b'\xff\xd8JPEGDATA' * 100
+    env2, blob2 = unpack_with_blob(pack_with_blob(env, blob))
+    assert env2 == env
+    assert blob2 == blob
+
+
+def test_unpack_with_blob_rejects_garbage():
+    from gpcore.protocol.envelope import unpack_with_blob
+    with pytest.raises(ProtocolError):
+        unpack_with_blob(b'\x00\x01')                  # shorter than header
+    with pytest.raises(ProtocolError):
+        unpack_with_blob(b'\x00\x00\xff\xff' + b'x')   # header exceeds size

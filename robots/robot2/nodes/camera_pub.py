@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 from gpcore.config import get_path, load_config              # noqa: E402
 from gpcore.logging_setup import new_run_id, setup_logging   # noqa: E402
 from gpcore.protocol import channels as ch                   # noqa: E402
-from gpcore.protocol.envelope import encode, make_envelope   # noqa: E402
+from gpcore.protocol.envelope import make_envelope, pack_with_blob  # noqa: E402
 
 REOPEN_AFTER_FAILURES = 30      # consecutive read failures → reopen device
 
@@ -117,7 +117,8 @@ def main():
                 'fmt': 'jpeg', 'cap_t_mono': t_cap, 'frame_id': seq,
             }, seq=seq, run_id=run_id, src=src)
             try:
-                pub.send_multipart([encode(meta), jpeg], zmq.NOBLOCK)
+                # single-part (header-prefixed): CONFLATE-safe on the consumer
+                pub.send(pack_with_blob(meta, jpeg), zmq.NOBLOCK)
             except zmq.Again:
                 pass
             if legacy is not None:
