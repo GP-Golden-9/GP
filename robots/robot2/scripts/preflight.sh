@@ -29,13 +29,16 @@ case "${THROTTLED:-}" in
 esac
 
 # 5. ROS 2 + python deps + config
+# ROS's setup.bash trips `set -u` (references unbound vars) — relax around it
+set +u
 source /opt/ros/humble/setup.bash 2>/dev/null && ok "ROS 2 humble sourced" || bad "cannot source ROS 2 humble"
-python3 - <<'EOF' && ok "python deps + config valid" || bad "python deps/config check failed"
+set -u
+python3 - <<EOF && ok "python deps + config valid" || bad "python deps/config check failed"
 import sys
-sys.path.insert(0, "/home/pi/GP/common")
+sys.path.insert(0, "$GP_DIR/common")
 import cv2, zmq, msgpack, yaml                 # noqa
 from gpcore.config import load_robot_config
-load_robot_config("/home/pi/GP/config/robot2.yaml")
+load_robot_config("$GP_DIR/config/robot2.yaml")
 EOF
 
 # 6. Load average sanity (Pi 3B+: refuse to start into an overloaded system)

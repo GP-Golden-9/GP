@@ -28,7 +28,10 @@ case "${THROTTLED:-}" in
 esac
 
 # 4. ROS 2 + python deps
+# ROS's setup.bash trips `set -u` (references unbound vars) — relax around it
+set +u
 source /opt/ros/humble/setup.bash 2>/dev/null && ok "ROS 2 humble sourced" || bad "cannot source ROS 2 humble"
+set -u
 python3 - <<EOF && ok "python deps + config valid" || bad "python deps/config check failed"
 import sys
 sys.path.insert(0, "$GP_DIR/common")
