@@ -29,12 +29,12 @@ esac
 
 # 4. ROS 2 + python deps
 source /opt/ros/humble/setup.bash 2>/dev/null && ok "ROS 2 humble sourced" || bad "cannot source ROS 2 humble"
-python3 - <<'EOF' && ok "python deps + config valid" || bad "python deps/config check failed"
+python3 - <<EOF && ok "python deps + config valid" || bad "python deps/config check failed"
 import sys
-sys.path.insert(0, "/home/pi/GP/common")
+sys.path.insert(0, "$GP_DIR/common")
 import zmq, msgpack, yaml                      # noqa
 from gpcore.config import load_robot_config
-load_robot_config("/home/pi/GP/config/robot1.yaml")
+load_robot_config("$GP_DIR/config/robot1.yaml")
 EOF
 
 # 5. Time sync (best effort — wall clocks correlate logs across machines)
