@@ -1,1 +1,26 @@
-./dashboard/__pycache__
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+
+# Logs & runtime artifacts
+gp_logs/
+incidents/
+*.log
+docs/baseline/probe_*.csv
+docs/baseline/probe_*.json
+
+# Secrets (ESP32 WiFi credentials — template is committed instead)
+firmware/**/config_secrets.h
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
