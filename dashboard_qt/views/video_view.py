@@ -7,8 +7,10 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPixmap
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import QWidget
+
+from views import theme
 
 STALE_BANNER_AFTER_S = 2.5
 
@@ -51,7 +53,8 @@ class VideoView(QWidget):
     # ── painting ──────────────────────────────────────────────────────────
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(12, 12, 16))
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor('#05080f'))
 
         if self._pixmap is not None:
             scaled = self._pixmap.scaled(self.size(), Qt.KeepAspectRatio,
@@ -60,36 +63,51 @@ class VideoView(QWidget):
             y = (self.height() - scaled.height()) // 2
             p.drawPixmap(x, y, scaled)
 
-        font = QFont('Consolas', 9)
-        p.setFont(font)
+        p.setFont(QFont('Consolas', 9, QFont.Bold))
 
         since_last = (time.monotonic() - self._last_frame_local
                       if self._last_frame_local else float('inf'))
 
-        # top-left: LIVE / NO SIGNAL
+        # top-left pill: LIVE / NO SIGNAL
         if since_last > STALE_BANNER_AFTER_S:
-            self._badge(p, 8, 8, '◼ NO SIGNAL', QColor(180, 30, 30))
+            self._pill(p, 10, 10, 'NO SIGNAL', dot=QColor(theme.BAD))
         else:
             age_txt = (f'{self._frame_age_s*1000:.0f} ms'
                        if self._frame_age_s is not None else f'{since_last*1000:.0f} ms')
-            self._badge(p, 8, 8, f'● LIVE  {self._fps:4.1f} fps  age {age_txt}',
-                        QColor(30, 120, 40))
+            self._pill(p, 10, 10, f'LIVE · {self._fps:.1f} FPS · {age_txt}',
+                       dot=QColor(theme.GOOD))
 
-        # top-right: AI state
+        # top-right pill: AI state
         if self._ai_on:
-            self._badge_right(p, 8, 'AI ON', QColor(20, 90, 160))
+            self._pill_right(p, 10, 'AI ON', dot=QColor(theme.ACCENT))
         else:
-            label = 'RAW (AI OFF)' + (f' — {self._ai_reason}' if self._ai_reason else '')
-            self._badge_right(p, 8, label, QColor(150, 90, 20))
+            label = 'RAW · AI OFF' + (f' — {self._ai_reason}' if self._ai_reason else '')
+            self._pill_right(p, 10, label, dot=QColor(theme.WARN))
         p.end()
 
-    def _badge(self, p: QPainter, x: int, y: int, text: str, color: QColor) -> None:
-        w = p.fontMetrics().horizontalAdvance(text) + 14
-        h = p.fontMetrics().height() + 8
-        p.fillRect(x, y, w, h, color)
-        p.setPen(Qt.white)
-        p.drawText(x + 7, y + h - 7, text)
+    def _pill(self, p: QPainter, x: int, y: int, text: str,
+              dot: QColor | None = None) -> None:
+        fm = p.fontMetrics()
+        dot_w = 14 if dot is not None else 0
+        w = fm.horizontalAdvance(text) + 22 + dot_w
+        h = fm.height() + 10
+        path = QPainterPath()
+        path.addRoundedRect(x, y, w, h, h / 2, h / 2)
+        p.fillPath(path, QColor(8, 12, 20, 205))
+        p.setPen(QColor(60, 72, 96, 160))
+        p.drawPath(path)
+        tx = x + 11
+        if dot is not None:
+            p.setPen(Qt.NoPen)
+            p.setBrush(dot)
+            p.drawEllipse(x + 10, y + h // 2 - 3, 7, 7)
+            tx += dot_w
+        p.setPen(QColor(theme.TEXT))
+        p.drawText(tx, y + h - 8, text)
 
-    def _badge_right(self, p: QPainter, y: int, text: str, color: QColor) -> None:
-        w = p.fontMetrics().horizontalAdvance(text) + 14
-        self._badge(p, self.width() - w - 8, y, text, color)
+    def _pill_right(self, p: QPainter, y: int, text: str,
+                    dot: QColor | None = None) -> None:
+        fm = p.fontMetrics()
+        dot_w = 14 if dot is not None else 0
+        w = fm.horizontalAdvance(text) + 22 + dot_w
+        self._pill(p, self.width() - w - 10, y, text, dot)

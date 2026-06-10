@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (QGridLayout, QGroupBox, QHBoxLayout, QLabel,
                                QPushButton, QSlider, QVBoxLayout, QWidget)
 
 from gpcore.protocol import commands as cmds
+from views import theme
 
 
 class HoldButton(QPushButton):
@@ -51,24 +52,32 @@ class ControlPanel(QWidget):
         self._stream.timeout.connect(self._stream_tick)
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(6, 6, 6, 6)
+        root.setSpacing(10)
 
         # ── action label ──
-        self.action_label = QLabel('Ready')
+        self.action_label = QLabel('READY')
         self.action_label.setAlignment(Qt.AlignCenter)
-        self.action_label.setStyleSheet('font-weight: bold; color: #4ade80;')
+        self.action_label.setStyleSheet(
+            f'font-weight:800; font-size:15px; letter-spacing:2px; '
+            f'color:{theme.GOOD};')
         root.addWidget(self.action_label)
 
         # ── D-pad ──
-        pad_box = QGroupBox('Manual control (WASD / arrows, hold to drive)')
+        pad_box = QGroupBox('MANUAL CONTROL · WASD / ARROWS · HOLD TO DRIVE')
         grid = QGridLayout(pad_box)
         self.btn_f = HoldButton('▲'); self.btn_b = HoldButton('▼')
         self.btn_l = HoldButton('◀'); self.btn_r = HoldButton('▶')
         stop_btn = QPushButton('■')
+        stop_btn.setObjectName('stopBtn')
         stop_btn.setFocusPolicy(Qt.NoFocus)
         stop_btn.clicked.connect(self._stop_clicked)
+        for b in (self.btn_f, self.btn_b, self.btn_l, self.btn_r):
+            b.setObjectName('dpadBtn')
         for b in (self.btn_f, self.btn_b, self.btn_l, self.btn_r, stop_btn):
-            b.setMinimumSize(52, 44)
+            b.setMinimumSize(56, 46)
             b.setMaximumWidth(80)
+        grid.setSpacing(6)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(4, 1)
         grid.addWidget(self.btn_f, 0, 2)
@@ -84,37 +93,53 @@ class ControlPanel(QWidget):
 
         # ── speed ──
         speed_row = QHBoxLayout()
-        speed_row.addWidget(QLabel('Speed'))
+        speed_title = QLabel('SPEED')
+        speed_title.setObjectName('sectionTitle')
+        speed_row.addWidget(speed_title)
         self.speed_slider = QSlider(Qt.Horizontal)
         self.speed_slider.setRange(int(prefs.speed_min * 100), int(prefs.speed_max * 100))
         self.speed_slider.setValue(int(prefs.speed_default * 100))
         self.speed_slider.valueChanged.connect(self._speed_moved)
         self.speed_label = QLabel(f'{prefs.speed_default:.2f} m/s')
+        self.speed_label.setStyleSheet(
+            f'color:{theme.ACCENT}; font-family:{theme.MONO}; font-weight:700;')
+        self.speed_label.setMinimumWidth(72)
+        self.speed_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         speed_row.addWidget(self.speed_slider, 1)
         speed_row.addWidget(self.speed_label)
         root.addLayout(speed_row)
 
         # ── autonomous ──
-        self.explore_btn = QPushButton('AUTONOMOUS: OFF')
+        self.explore_btn = QPushButton('AUTONOMOUS · OFF')
+        self.explore_btn.setObjectName('exploreBtn')
         self.explore_btn.setCheckable(True)
+        self.explore_btn.setMinimumHeight(38)
         self.explore_btn.setFocusPolicy(Qt.NoFocus)
         self.explore_btn.toggled.connect(self._explore_toggled)
         root.addWidget(self.explore_btn)
 
         # ── accessories (robot2 only) ──
-        self.acc_box = QGroupBox('Intervention tools')
+        self.acc_box = QGroupBox('INTERVENTION TOOLS')
         acc = QGridLayout(self.acc_box)
-        self.pump_btn = HoldButton('💧 PUMP (hold to spray, max 5 s)')
-        self.pump_btn.setMinimumHeight(40)
+        acc.setSpacing(8)
+        self.pump_btn = HoldButton('💧  PUMP — hold to spray (max 5 s)')
+        self.pump_btn.setObjectName('pumpBtn')
+        self.pump_btn.setMinimumHeight(44)
         self.pump_btn.held.connect(self._pump_held)
-        acc.addWidget(self.pump_btn, 0, 0, 1, 2)
-        acc.addWidget(QLabel('Arm servo'), 1, 0)
+        acc.addWidget(self.pump_btn, 0, 0, 1, 3)
+        servo_lbl = QLabel('ARM SERVO')
+        servo_lbl.setObjectName('sectionTitle')
+        acc.addWidget(servo_lbl, 1, 0)
         self.servo_slider = QSlider(Qt.Horizontal)
         self.servo_slider.setRange(10, 170)
         self.servo_slider.setValue(90)
         self.servo_slider.sliderReleased.connect(
             lambda: self.servoRequested.emit(self.servo_slider.value()))
         self.servo_value = QLabel('90°')
+        self.servo_value.setStyleSheet(
+            f'color:{theme.ACCENT}; font-family:{theme.MONO}; font-weight:700;')
+        self.servo_value.setMinimumWidth(44)
+        self.servo_value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.servo_slider.valueChanged.connect(
             lambda v: self.servo_value.setText(f'{v}°'))
         acc.addWidget(self.servo_slider, 1, 1)
@@ -143,14 +168,15 @@ class ControlPanel(QWidget):
         if engage == self._estop:
             return
         self._estop = engage
+        base = 'font-weight:800; font-size:15px; letter-spacing:2px;'
         if engage:
             self._held_dir = None
             self._stream.stop()
-            self.action_label.setText('EMERGENCY STOP')
-            self.action_label.setStyleSheet('font-weight: bold; color: #f87171;')
+            self.action_label.setText('⛔ EMERGENCY STOP')
+            self.action_label.setStyleSheet(base + f'color:{theme.BAD};')
         else:
-            self.action_label.setText('Ready')
-            self.action_label.setStyleSheet('font-weight: bold; color: #4ade80;')
+            self.action_label.setText('READY')
+            self.action_label.setStyleSheet(base + f'color:{theme.GOOD};')
         self._style_estop()
         self.estopToggled.emit(engage)
 
@@ -171,13 +197,11 @@ class ControlPanel(QWidget):
     # ── internals ─────────────────────────────────────────────────────────
     def _style_estop(self) -> None:
         if self._estop:
-            self.estop_btn.setText('RELEASE E-STOP')
-            self.estop_btn.setStyleSheet(
-                'background:#ca8a04; color:white; font-weight:bold;')
+            self.estop_btn.setText('▲  RELEASE E-STOP')
+            self.estop_btn.setStyleSheet(theme.ESTOP_ENGAGED)
         else:
-            self.estop_btn.setText('EMERGENCY STOP  (Esc)')
-            self.estop_btn.setStyleSheet(
-                'background:#b91c1c; color:white; font-weight:bold;')
+            self.estop_btn.setText('EMERGENCY STOP  ·  Esc')
+            self.estop_btn.setStyleSheet(theme.ESTOP_IDLE)
 
     def _set_held(self, direction: str, on: bool) -> None:
         if self._estop:
@@ -215,7 +239,7 @@ class ControlPanel(QWidget):
         self.speedChanged.emit(self._speed)
 
     def _explore_toggled(self, on: bool) -> None:
-        self.explore_btn.setText(f'AUTONOMOUS: {"ON" if on else "OFF"}')
+        self.explore_btn.setText(f'AUTONOMOUS · {"ON" if on else "OFF"}')
         self.exploreToggled.emit(on)
 
     def _pump_held(self, on: bool) -> None:

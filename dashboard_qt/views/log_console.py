@@ -16,9 +16,10 @@ class LogConsole(QPlainTextEdit):
         super().__init__(parent)
         self.setReadOnly(True)
         self.setMaximumBlockCount(MAX_BLOCKS)
+        self.setFrameShape(self.Shape.NoFrame)
         self.setStyleSheet(
-            'background:#0b0e14; color:#86efac; font-family:Consolas,monospace;'
-            'font-size:11px;')
+            'background:#0d1422; color:#86efac; border:none; border-radius:8px;'
+            'font-family:Consolas,monospace; font-size:11px; padding:6px;')
 
     def append_line(self, line: str, *, source: str = 'robot') -> None:
         stamp = time.strftime('%H:%M:%S')

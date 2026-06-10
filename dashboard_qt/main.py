@@ -70,9 +70,14 @@ def main() -> int:
                         extra={'kv': {'path': model_path}})
 
     app = QApplication(sys.argv)
+    app.setStyle('Fusion')                 # respects stylesheets consistently
+    from views import theme
+    app.setStyleSheet(theme.QSS)
+
     from views.main_window import MainWindow
     win = MainWindow(cfg, yolo_manager=yolo, run_id=run_id)
-    win.show()
+    theme.enable_dark_titlebar(win)
+    win.showMaximized()
     if args.exit_after:
         from PySide6.QtCore import QTimer
         QTimer.singleShot(int(args.exit_after * 1000), app.quit)

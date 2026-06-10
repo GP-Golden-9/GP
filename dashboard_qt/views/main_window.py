@@ -17,17 +17,20 @@ from functools import partial
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeyEvent
-from PySide6.QtWidgets import (QComboBox, QLabel, QMainWindow, QSplitter,
-                               QTabWidget, QToolBar, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QLabel, QMainWindow, QPushButton,
+                               QSizePolicy, QSplitter, QTabWidget, QToolBar,
+                               QVBoxLayout, QWidget)
 
 from gpcore.protocol import commands as cmds
 from state.store import RobotState
 from transport.esp32_link import Esp32Link
 from transport.zmq_link import CommandClient, RobotLink
+from views import theme
 from views.control_panel import ControlPanel
 from views.health_panel import HealthPanel
 from views.log_console import LogConsole
 from views.map_view import MapView
+from views.theme import Card, chip
 from views.video_view import VideoView
 
 KEY_DIRS = {
@@ -48,9 +51,8 @@ class MainWindow(QMainWindow):
         self._frame_caps: dict[int, float] = {}      # frame_id → cap_t_mono
 
         self.setWindowTitle('GP Fleet Console')
-        self.resize(1480, 860)
-        self.setStyleSheet('QMainWindow{background:#11141b;} '
-                           'QGroupBox{color:#cbd5e1;} QLabel{color:#cbd5e1;}')
+        self.resize(1480, 880)
+        self._last_sb_update = 0.0
 
         # ── per-robot transport + state ──
         self.links: dict[str, object] = {}
@@ -101,17 +103,25 @@ class MainWindow(QMainWindow):
         tb = QToolBar('Fleet')
         tb.setMovable(False)
         self.addToolBar(tb)
-        tb.addWidget(QLabel(' Robot: '))
+
+        title = QLabel('GP <b>FLEET</b> CONSOLE')
+        title.setObjectName('appTitle')
+        tb.addWidget(title)
+
+        robot_lbl = QLabel('ROBOT')
+        robot_lbl.setObjectName('sectionTitle')
+        tb.addWidget(robot_lbl)
         self.robot_combo = QComboBox()
         for prof in app_cfg.robots:
-            self.robot_combo.addItem(f'{prof.name} ({prof.id})', prof.id)
+            self.robot_combo.addItem(f'{prof.name}  ·  {prof.id}', prof.id)
         self.robot_combo.setCurrentIndex(
             max(0, [p.id for p in app_cfg.robots].index(self.active_id)))
         self.robot_combo.currentIndexChanged.connect(self._robot_switched)
         tb.addWidget(self.robot_combo)
 
-        tb.addSeparator()
-        tb.addWidget(QLabel(' AI model: '))
+        model_lbl = QLabel('AI MODEL')
+        model_lbl.setObjectName('sectionTitle')
+        tb.addWidget(model_lbl)
         self.model_combo = QComboBox()
         for p in sorted(glob.glob(os.path.join(app_cfg.prefs.models_dir, '*.pt'))):
             self.model_combo.addItem(os.path.basename(p), p)
@@ -121,40 +131,72 @@ class MainWindow(QMainWindow):
         self.model_combo.currentIndexChanged.connect(self._model_switched)
         tb.addWidget(self.model_combo)
 
-        tb.addSeparator()
-        self.link_label = QLabel('  link: …  ')
-        tb.addWidget(self.link_label)
-        self.runid_label = QLabel(f'  run: {run_id}  ')
-        tb.addWidget(self.runid_label)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        tb.addWidget(spacer)
 
-        # ── central layout ──
-        split = QSplitter(Qt.Horizontal)
-        left = QSplitter(Qt.Vertical)
+        self.link_chip = chip('LINK …')
+        tb.addWidget(self.link_chip)
+        self.runid_chip = chip(f'run {run_id}')
+        tb.addWidget(self.runid_chip)
+
+        # ── central layout (cards inside splitters) ──
         self.video_view = VideoView()
         self.log_console = LogConsole()
-        left.addWidget(self.video_view)
-        left.addWidget(self.log_console)
-        left.setSizes([560, 260])
-
-        right = QSplitter(Qt.Vertical)
         self.map_view = MapView()
         self.map_view.goalClicked.connect(self._goal_clicked)
+
+        video_card = Card('LIVE FEED')
+        video_card.body.addWidget(self.video_view)
+        log_card = Card('INCIDENT LOG')
+        log_card.body.addWidget(self.log_console)
+
+        map_card = Card('SLAM MAP  ·  click to set goal')
+        fit_btn = QPushButton('FIT VIEW')
+        fit_btn.setObjectName('fitBtn')
+        fit_btn.setFocusPolicy(Qt.NoFocus)
+        fit_btn.clicked.connect(self.map_view.fit_map)
+        map_card.header.addWidget(fit_btn)
+        map_card.body.addWidget(self.map_view)
+
         tabs = QTabWidget()
-        active_prof = app_cfg.profile(self.active_id)
+        tabs.setFocusPolicy(Qt.NoFocus)
         self.control_panel = ControlPanel(
             app_cfg.prefs, accessories_enabled=(self.active_id == 'robot2'))
         self.health_panel = HealthPanel()
-        tabs.addTab(self.control_panel, 'Control')
-        tabs.addTab(self.health_panel, 'Health')
-        right.addWidget(self.map_view)
-        right.addWidget(tabs)
-        right.setSizes([460, 360])
+        tabs.addTab(self.control_panel, 'CONTROL')
+        tabs.addTab(self.health_panel, 'HEALTH')
+        panel_card = Card(padding=8)
+        panel_card.body.addWidget(tabs)
 
+        left = QSplitter(Qt.Vertical)
+        left.addWidget(video_card)
+        left.addWidget(log_card)
+        left.setSizes([580, 240])
+
+        right = QSplitter(Qt.Vertical)
+        right.addWidget(map_card)
+        right.addWidget(panel_card)
+        right.setSizes([420, 420])
+
+        split = QSplitter(Qt.Horizontal)
         split.addWidget(left)
         split.addWidget(right)
-        split.setSizes([840, 620])
-        self.setCentralWidget(split)
-        self.statusBar().setStyleSheet('color:#cbd5e1;')
+        split.setSizes([860, 600])
+
+        wrapper = QWidget()
+        outer = QVBoxLayout(wrapper)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.addWidget(split)
+        self.setCentralWidget(wrapper)
+
+        # status bar: structured fields, updated at most 4×/s
+        sb = self.statusBar()
+        self.sb_nav = QLabel('nav —')
+        self.sb_enc = QLabel('enc —')
+        self.sb_acc = QLabel('acc —')
+        for w in (self.sb_nav, self.sb_enc, self.sb_acc):
+            sb.addWidget(w)
 
         # ── control panel → active robot ──
         cp = self.control_panel
@@ -235,9 +277,21 @@ class MainWindow(QMainWindow):
         servo = payload.get('servo_deg')
         if servo is not None:
             self.control_panel.set_servo_feedback(int(servo))
-        self.statusBar().showMessage(
-            f"{robot_id} | nav {nav or '—'} | enc {payload.get('enc') or '—'} | "
-            f"acc {payload.get('accessory') or '—'}")
+
+        # status bar at 4 Hz max — repainting labels at telemetry rate (20 Hz)
+        # is wasted work and makes the text flicker
+        now = time.monotonic()
+        if now - self._last_sb_update >= 0.25:
+            self._last_sb_update = now
+            state = (nav or 'IDLE').split(':')[0]
+            color = {'DRIVING': theme.ACCENT, 'ROTATING': theme.WARN,
+                     'ARRIVED': theme.GOOD}.get(state, theme.MUTED)
+            self.sb_nav.setText(f'{robot_id}  ·  nav {nav or "IDLE"}')
+            self.sb_nav.setStyleSheet(f'color:{color};')
+            enc = payload.get('enc')
+            self.sb_enc.setText(f'enc {enc}' if enc else 'enc —')
+            acc = payload.get('accessory')
+            self.sb_acc.setText(f'acc {acc}' if acc else '')
 
     def _on_scan(self, robot_id: str, payload: dict) -> None:
         if self._is_active(robot_id):
@@ -268,7 +322,9 @@ class MainWindow(QMainWindow):
 
     def _on_link_state(self, robot_id: str, up: bool) -> None:
         if self._is_active(robot_id):
-            self.link_label.setText(f'  link: {"🟢 up" if up else "🔴 down"}  ')
+            self.link_chip.setText('●  LINK UP' if up else '●  LINK DOWN')
+            self.link_chip.setStyleSheet(
+                f'color:{theme.GOOD};' if up else f'color:{theme.BAD};')
         self._local_log(f'{robot_id} command link {"up" if up else "DOWN"}')
 
     def _on_ack(self, robot_id: str, cmd_id: str, cmd_type: str, ok: bool,

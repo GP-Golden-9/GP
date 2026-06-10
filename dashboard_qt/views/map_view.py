@@ -18,8 +18,11 @@ import zlib
 
 import numpy as np
 from PySide6.QtCore import QPointF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import (QBrush, QColor, QImage, QPainter, QPainterPath,
+                           QPen, QPixmap, qRgb)
 from PySide6.QtWidgets import QGraphicsPathItem, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView
+
+from views import theme
 
 ROBOT_RADIUS_M = 0.115
 SCAN_DOT_M = 0.02
@@ -29,32 +32,44 @@ SCAN_REBUILD_MIN_S = 0.1
 class MapView(QGraphicsView):
     goalClicked = Signal(float, float)          # world meters
 
+    MIN_PX_PER_M = 15
+    MAX_PX_PER_M = 800
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setScene(QGraphicsScene(self))
         self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
-        self.setBackgroundBrush(QColor(40, 40, 46))
+        self.setBackgroundBrush(QColor('#0d1422'))
+        self.setFrameShape(QGraphicsView.NoFrame)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate)
         # world frame: x right, y UP (Qt default is y-down → flip the view)
         self.scale(120, -120)                   # initial: 120 px per meter
 
         self._grid_item: QGraphicsPixmapItem | None = None
+        scan_color = QColor('#fb7185')          # laser endpoints (rose)
         self._scan_item = QGraphicsPathItem()
-        self._scan_item.setPen(QPen(QColor(235, 64, 52), 0))
-        self._scan_item.setBrush(QBrush(QColor(235, 64, 52)))
+        self._scan_item.setPen(QPen(scan_color, 0))
+        self._scan_item.setBrush(QBrush(scan_color))
         self._scan_item.setZValue(2)
         self.scene().addItem(self._scan_item)
 
         self._robot_item = QGraphicsPathItem()
-        self._robot_item.setPen(QPen(QColor(0, 255, 120), 0))
-        self._robot_item.setBrush(QBrush(QColor(0, 180, 80, 200)))
+        self._robot_item.setPen(QPen(QColor('#6ee7b7'), 0.02))
+        self._robot_item.setBrush(QBrush(QColor(52, 211, 153, 215)))
         self._robot_item.setZValue(3)
         self.scene().addItem(self._robot_item)
 
+        self._goal_line_item = QGraphicsPathItem()
+        line_pen = QPen(QColor(theme.WARN), 0.015)
+        line_pen.setStyle(Qt.DashLine)
+        self._goal_line_item.setPen(line_pen)
+        self._goal_line_item.setZValue(4)
+        self.scene().addItem(self._goal_line_item)
+
         self._goal_item = QGraphicsPathItem()
-        pen = QPen(QColor(255, 70, 70), 0)
-        self._goal_item.setPen(pen)
-        self._goal_item.setZValue(4)
+        self._goal_item.setPen(QPen(QColor(theme.BAD), 0.025))
+        self._goal_item.setZValue(5)
         self.scene().addItem(self._goal_item)
 
         self._pose = (0.0, 0.0, 0.0)
@@ -76,15 +91,18 @@ class MapView(QGraphicsView):
         except (KeyError, ValueError, zlib.error):
             return
 
-        # RViz palette: unknown gray, free near-white, occupied black
-        img = np.full((h, w), 205, dtype=np.uint8)
-        img[grid == 0] = 254
-        img[grid > 50] = 0
+        # Theme palette: unknown deep slate, free light, occupied near-black
+        img = np.zeros((h, w), dtype=np.uint8)          # 0 = unknown
+        img[grid == 0] = 1                              # 1 = free
+        img[grid > 50] = 2                              # 2 = occupied
         # occupancy row 0 is the SOUTH edge; QImage row 0 is the TOP → flip
         img = np.ascontiguousarray(np.flipud(img))
 
-        qimg = QImage(img.data, w, h, w, QImage.Format_Grayscale8).copy()
-        pixmap = QPixmap.fromImage(qimg)
+        qimg = QImage(img.data, w, h, w, QImage.Format_Indexed8)
+        qimg.setColorTable([qRgb(*theme.MAP_UNKNOWN),
+                            qRgb(*theme.MAP_FREE),
+                            qRgb(*theme.MAP_OCCUPIED)])
+        pixmap = QPixmap.fromImage(qimg.copy())
 
         if self._grid_item is None:
             self._grid_item = self.scene().addPixmap(pixmap)
@@ -148,6 +166,7 @@ class MapView(QGraphicsView):
     def clear_goal(self) -> None:
         self._goal = None
         self._goal_item.setPath(QPainterPath())
+        self._goal_line_item.setPath(QPainterPath())
 
     def _draw_goal(self) -> None:
         if self._goal is None:
@@ -158,9 +177,12 @@ class MapView(QGraphicsView):
         path.moveTo(gx - s, gy); path.lineTo(gx + s, gy)
         path.moveTo(gx, gy - s); path.lineTo(gx, gy + s)
         path.addEllipse(QPointF(gx, gy), s * 0.6, s * 0.6)
-        rx, ry, _ = self._pose
-        path.moveTo(rx, ry); path.lineTo(gx, gy)
         self._goal_item.setPath(path)
+
+        rx, ry, _ = self._pose
+        line = QPainterPath()
+        line.moveTo(rx, ry); line.lineTo(gx, gy)
+        self._goal_line_item.setPath(line)
 
     def fit_map(self) -> None:
         if self._grid_item is not None:
@@ -169,7 +191,10 @@ class MapView(QGraphicsView):
     # ── interactions ──────────────────────────────────────────────────────
     def wheelEvent(self, event) -> None:
         factor = 1.25 if event.angleDelta().y() > 0 else 0.8
-        self.scale(factor, factor)
+        # clamp so the user can never zoom into pixel soup or lose the map
+        new_scale = abs(self.transform().m11()) * factor
+        if self.MIN_PX_PER_M <= new_scale <= self.MAX_PX_PER_M:
+            self.scale(factor, factor)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.RightButton:
