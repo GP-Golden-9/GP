@@ -32,16 +32,17 @@ from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import Bool, Float32, Int32MultiArray, String
 
+# allow running from a source checkout (gateway/ next to common/)
+_here = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _here)
+sys.path.insert(0, os.path.abspath(os.path.join(_here, '..', 'common')))
+
 from gpcore.config import load_robot_config
 from gpcore.logging_setup import new_run_id, setup_logging
 from gpcore.protocol import channels as ch
 from gpcore.protocol import commands as cmds
 from gpcore.serialproto import mega_commands as mc
 
-# allow running from a source checkout (gateway/ next to common/)
-_here = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _here)
-sys.path.insert(0, os.path.abspath(os.path.join(_here, '..', 'common')))
 from zmq_server import GatewayServer            # noqa: E402
 from health_aggregator import HealthAggregator  # noqa: E402
 
