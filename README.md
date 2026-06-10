@@ -113,7 +113,7 @@ over the air (Arduino IDE → network port `robot3`).
 |---|---|---|
 | `firmware/robot1_controller_v3` | Mega 2560 | ✅ compile-verified (2% flash) — non-blocking parser, watchdog-honest diagnostics |
 | `firmware/robot2_controller_v5` | Mega 2560 | ✅ compile-verified (9% flash) — pump (5 s hard limit), slew-limited arm servo, e-stop latch, ACKed commands |
-| `firmware/robot3_controller_v2` | ESP32 | command watchdog, WiFi self-heal, latched gas alarm, OTA, secrets out of source |
+| `firmware/robot3_controller_v2` | ESP32 | ✅ compile-verified (79% flash, 16% RAM) — command watchdog, WiFi self-heal, latched gas alarm, OTA, secrets out of source |
 | `arduino/…` (v2/v4 generations) | Mega 2560 | kept as flash-back rollbacks |
 
 Every firmware change goes through `docs/bench_robot2_v5.md` (power-budget
