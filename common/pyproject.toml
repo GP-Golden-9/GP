@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpcore"
+version = "0.1.0"
+description = "GP robot fleet core: protocol, serial parsing, kinematics, config, logging (no ROS dependency)"
+requires-python = ">=3.9"
+dependencies = [
+    "msgpack>=1.0",
+    "PyYAML>=6.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["gpcore*"]
