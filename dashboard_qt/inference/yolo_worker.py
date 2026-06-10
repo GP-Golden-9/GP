@@ -24,7 +24,10 @@ import time
 
 from PySide6.QtCore import QObject, Signal
 
-HANG_TIMEOUT_S = 5.0
+# Generous: the child warms the model before 'ready', so a healthy worker
+# answers every frame in well under a second — but a busy CPU (screen
+# recording, model swap) must not get the child shot for a slow burst.
+HANG_TIMEOUT_S = 12.0
 MAX_RESPAWNS_PER_MIN = 3
 
 
@@ -38,12 +41,20 @@ def _child_main(in_q: mp.Queue, out_q: mp.Queue, model_path: str) -> None:
         except ImportError:
             from concat_head import install as install_concat_head
 
+    def load_and_warm(path):
+        """Load + one throwaway inference: torch's FIRST forward pass can
+        take seconds (kernel selection/tracing) — warming here keeps the
+        parent's hang watchdog honest once we report 'ready'."""
+        m = YOLO(path)
+        m(np.zeros((480, 640, 3), dtype=np.uint8), verbose=False)
+        return m
+
     try:
         import cv2
         import numpy as np
         install_concat_head()
         from ultralytics import YOLO
-        model = YOLO(model_path)
+        model = load_and_warm(model_path)
         out_q.put(('ready', model_path))
     except Exception as exc:
         out_q.put(('unavailable', f'{type(exc).__name__}: {exc}'))
@@ -59,7 +70,7 @@ def _child_main(in_q: mp.Queue, out_q: mp.Queue, model_path: str) -> None:
             return
         if kind == 'model':
             try:
-                model = YOLO(item[1])
+                model = load_and_warm(item[1])
                 out_q.put(('ready', item[1]))
             except Exception as exc:
                 out_q.put(('error', f'model load failed: {exc}'))
@@ -204,6 +215,9 @@ class YoloManager(QObject):
                 detections = item[3] if len(item) > 3 else []
                 self.annotatedFrame.emit(item[1], item[2], detections)
             elif kind == 'ready':
+                self._respawn_times.clear()       # healthy again → fresh budget
+                self._inflight = 0
+                self._last_result = time.monotonic()
                 self._set_available(True, '')
                 self.modelChanged.emit(item[1])
             elif kind == 'unavailable':

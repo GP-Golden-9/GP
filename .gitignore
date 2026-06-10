@@ -20,6 +20,9 @@ docs/baseline/soak_*.json
 # Secrets (ESP32 WiFi credentials — template is committed instead)
 firmware/**/config_secrets.h
 
+# Downloaded test assets (fire photos for sim detection tests)
+dashboard_qt/sim/assets/
+
 # OS / editor noise
 .DS_Store
 Thumbs.db

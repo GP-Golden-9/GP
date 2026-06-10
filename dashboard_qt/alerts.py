@@ -39,6 +39,8 @@ class AlertState(str, Enum):
 
 
 # ── Tuning ────────────────────────────────────────────────────────────────
+# EXACT label match (lowercased). Substring matching is a trap: COCO's
+# 'fire hydrant' contains 'fire' and must NOT raise the fire alarm.
 FIRE_LABELS = ('fire', 'smoke', 'flame')
 FIRE_CONF_MIN = 0.50
 FIRE_RAISE_HITS = 3
@@ -66,8 +68,12 @@ class AlertManager(QObject):
     alertCleared = Signal(str)          # kind
     logEvent = Signal(str)              # human line for the incident log
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, fire_conf_min: float = FIRE_CONF_MIN):
         super().__init__(parent)
+        # Threshold is config-driven (fleet.yaml dashboard.fire_conf_min):
+        # it must match the actual model's behavior. Measured on a real
+        # bonfire photo: fire.pt scores 28-37%, yolov8n-fire.pt 13-20%.
+        self.fire_conf_min = fire_conf_min
         self._k: dict[AlertKind, _KindTracker] = {k: _KindTracker() for k in AlertKind}
         self._sweep = QTimer(self)
         self._sweep.setInterval(SWEEP_PERIOD_MS)
@@ -80,7 +86,7 @@ class AlertManager(QObject):
         """Feed every annotated frame's (label, confidence) list."""
         best = None
         for label, conf in detections or ():
-            if conf >= FIRE_CONF_MIN and any(t in label.lower() for t in FIRE_LABELS):
+            if conf >= self.fire_conf_min and label.strip().lower() in FIRE_LABELS:
                 if best is None or conf > best[1]:
                     best = (label, conf)
         if best is None:

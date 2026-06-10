@@ -36,7 +36,8 @@ class DashboardPrefs:
     speed_default: float = 0.15
     turn_rate: float = 0.5
     models_dir: str = os.path.join(REPO, 'models')
-    default_model: str = 'yolov8n-fire.pt'
+    default_model: str = 'fire.pt'
+    fire_conf_min: float = 0.25
 
 
 @dataclass
@@ -82,7 +83,8 @@ def load_app_config(fleet_path: str | None = None) -> AppConfig:
         speed_default=d.get('speed_default_mps', 0.15),
         turn_rate=d.get('turn_rate_rps', 0.5),
         models_dir=models_dir,
-        default_model=d.get('default_model', 'yolov8n-fire.pt'),
+        default_model=d.get('default_model', 'fire.pt'),
+        fire_conf_min=d.get('fire_conf_min', 0.25),
     )
     return AppConfig(robots=robots, prefs=prefs,
                      default_robot=get_path(fleet, 'fleet.default_robot',

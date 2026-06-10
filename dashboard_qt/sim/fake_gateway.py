@@ -136,7 +136,29 @@ class SimRobot:
                         dtype=np.float32), angles[1] - angles[0]
 
 
-def video_thread(run_id: str, stop: threading.Event, faults: dict) -> None:
+def draw_flame(frame, cx: int, cy: int, t: float, rng: np.random.Generator) -> None:
+    """Animated flame: layered red→orange→yellow tongues with flicker.
+
+    Realistic enough that fire-trained YOLO models often trigger on it,
+    which lets the FULL alert pipeline (camera → inference child →
+    detections → alert engine → banner) be exercised with zero hardware.
+    """
+    import cv2
+    layers = (((10, 30, 200), 46), ((20, 90, 235), 34), ((40, 170, 250), 24),
+              ((120, 235, 255), 12))
+    for (color, base_r) in layers:
+        for k in range(5):
+            phase = t * (6.5 + k * 1.7) + k * 2.1
+            ox = int(math.sin(phase) * base_r * 0.35 + rng.normal(0, 2.0))
+            oy = -int(k * base_r * 0.35 + abs(math.sin(phase * 0.7)) * 9)
+            r_w = max(4, int(base_r * (1.0 + 0.18 * math.sin(phase * 1.3))))
+            r_h = max(6, int(r_w * (1.5 + 0.3 * math.sin(phase))))
+            cv2.ellipse(frame, (cx + ox, cy + oy), (r_w, r_h),
+                        0, 0, 360, color, -1)
+
+
+def video_thread(run_id: str, stop: threading.Event, faults: dict,
+                 fire_image_path: str = '') -> None:
     import cv2
     ctx = zmq.Context.instance()
     pub = ctx.socket(zmq.PUB); pub.setsockopt(zmq.SNDHWM, 2)
@@ -144,10 +166,15 @@ def video_thread(run_id: str, stop: threading.Event, faults: dict) -> None:
     legacy = ctx.socket(zmq.PUB); legacy.setsockopt(zmq.SNDHWM, 1)
     legacy.setsockopt(zmq.LINGER, 0); legacy.bind('tcp://*:5555')
 
+    fire_img = cv2.imread(fire_image_path) if fire_image_path else None
+    if fire_img is not None:
+        fire_img = cv2.resize(fire_img, (400, 300))
+
     base = np.zeros((480, 640, 3), np.uint8)
     base[:] = (40, 30, 24)
     for i in range(0, 640, 40):
         cv2.line(base, (i, 0), (i, 480), (60, 50, 40), 1)
+    rng = np.random.default_rng(7)
     seq = 0
     t0 = time.monotonic()
     while not stop.is_set():
@@ -156,11 +183,18 @@ def video_thread(run_id: str, stop: threading.Event, faults: dict) -> None:
             time.sleep(0.1)
             continue
         frame = base.copy()
-        cx = int(320 + 240 * math.sin(t * 0.8))
-        cy = int(240 + 140 * math.cos(t * 1.1))
-        cv2.circle(frame, (cx, cy), 36, (0, 90, 220), -1)          # "fire"
-        cv2.putText(frame, f'SIM CAMERA t={t:6.1f}s frame={seq}', (12, 26),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (240, 240, 240), 1)
+        # fire is "burning" on a 12 s cycle: 7 s on, 5 s off — exercises both
+        # the alert RAISE and the auto-CLEAR paths of the alert engine
+        fire_on = (t % 12.0) < 7.0
+        if fire_on:
+            if fire_img is not None:
+                jitter = int(3 * math.sin(t * 9))
+                frame[100:400, 120 + jitter:520 + jitter] = fire_img
+            else:
+                draw_flame(frame, 320, 300, t, rng)
+        cv2.putText(frame, f'SIM CAMERA t={t:6.1f}s frame={seq} '
+                           f'fire={"ON" if fire_on else "off"}',
+                    (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (240, 240, 240), 1)
         ok, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 35])
         if not ok:
             continue
@@ -184,6 +218,9 @@ def main() -> int:
     ap.add_argument('--drop-video-at', type=float, default=0)
     ap.add_argument('--silence-map-at', type=float, default=0)
     ap.add_argument('--kill-at', type=float, default=0)
+    ap.add_argument('--fire-image', default='',
+                    help='photo of real fire to composite into the video '
+                         '(more reliable detection than the synthetic flame)')
     args = ap.parse_args()
     faults = {'drop_video_at': args.drop_video_at}
 
@@ -238,7 +275,8 @@ def main() -> int:
     server.set_handler(cmds.CMD_SPEED, lambda env: (True, 'ok'))
 
     stop = threading.Event()
-    vt = threading.Thread(target=video_thread, args=(run_id, stop, faults),
+    vt = threading.Thread(target=video_thread,
+                          args=(run_id, stop, faults, args.fire_image),
                           daemon=True)
     vt.start()
 

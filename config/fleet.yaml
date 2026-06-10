@@ -13,4 +13,10 @@ dashboard:
   speed_default_mps: 0.15
   turn_rate_rps: 0.5
   models_dir: ../models        # relative to dashboard_qt/
-  default_model: yolov8n-fire.pt
+  # fire.pt measured strongest on real fire photos (28-37% conf, clean
+  # detections); yolov8n-fire.pt (dual-head, also COCO objects) scored
+  # 13-20% with noise — selectable in the toolbar when COCO classes matter.
+  default_model: fire.pt
+  # Alarm threshold matched to the measured model confidence above; the
+  # 3-hits-in-2s debounce in the alert engine suppresses single-frame noise.
+  fire_conf_min: 0.25

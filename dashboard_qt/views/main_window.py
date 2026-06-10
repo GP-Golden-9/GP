@@ -133,7 +133,8 @@ class MainWindow(QMainWindow):
             st.estopChanged.connect(partial(self._on_robot_estop, prof.id))
 
     def _build_alerts(self) -> None:
-        self.alerts = AlertManager(parent=self)
+        self.alerts = AlertManager(
+            parent=self, fire_conf_min=self.app_cfg.prefs.fire_conf_min)
         self.alert_banner = AlertBanner()
         self.alerts.alertRaised.connect(self._on_alert_raised)
         self.alerts.alertAcked.connect(self.alert_banner.on_acked)

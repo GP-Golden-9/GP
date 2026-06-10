@@ -30,9 +30,13 @@ from gpcore.logging_setup import new_run_id, setup_logging  # noqa: E402
 
 
 def start_sim() -> subprocess.Popen:
-    proc = subprocess.Popen(
-        [sys.executable, os.path.join(HERE, 'sim', 'fake_gateway.py')],
-        cwd=REPO)
+    cmd = [sys.executable, os.path.join(HERE, 'sim', 'fake_gateway.py')]
+    # If a real fire photo is present (gitignored test asset), composite it
+    # into the sim feed so REAL detection → alert can be exercised end-to-end.
+    fire_asset = os.path.join(HERE, 'sim', 'assets', 'fire_crop.jpg')
+    if os.path.isfile(fire_asset):
+        cmd += ['--fire-image', fire_asset]
+    proc = subprocess.Popen(cmd, cwd=REPO)
     atexit.register(lambda: proc.poll() is None and proc.terminate())
     return proc
 
