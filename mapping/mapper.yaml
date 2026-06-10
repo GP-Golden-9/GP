@@ -23,8 +23,13 @@ slam_toolbox:
     enable_interactive_mode: false
     use_scan_matching: true
     use_scan_barycenter: true
-    minimum_travel_distance: 0.05
-    minimum_travel_heading: 0.0
+    # No wheel odometry on robot1: scan matching estimates ALL motion.
+    # heading 0.0 made EVERY scan pass the has-moved test, so identical
+    # stationary scans were re-registered ~3x/s — CPU churn and speckle
+    # noise in free space. 0.10 m / ~10 deg registers nodes only on real
+    # motion: cleaner graph, crisper walls, far fewer phantom cells.
+    minimum_travel_distance: 0.10
+    minimum_travel_heading: 0.17
     map_start_pose: [0.0, 0.0, 0.0]
     map_start_at_dock: true
 

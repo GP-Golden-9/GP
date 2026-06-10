@@ -51,6 +51,26 @@ MARKER_COLOR = {'FIRE': theme.MARKER_FIRE, 'GAS': theme.MARKER_GAS,
                 'PIN': theme.MARKER_PIN}
 
 
+def _occupancy_color_table() -> list:
+    """RViz-grade palette: occupancy 0..100 is a CONTINUOUS gradient from
+    free to occupied (probabilistic cells render as confidence, not a
+    binary threshold), index 255 is unknown. Indices 101–254 are clamped
+    to occupied as a defensive fill."""
+    free, occ = theme.MAP_FREE, theme.MAP_OCCUPIED
+    table = []
+    for i in range(101):
+        t = i / 100.0
+        table.append(qRgb(round(free[0] + (occ[0] - free[0]) * t),
+                          round(free[1] + (occ[1] - free[1]) * t),
+                          round(free[2] + (occ[2] - free[2]) * t)))
+    table += [qRgb(*occ)] * 154
+    table.append(qRgb(*theme.MAP_UNKNOWN))
+    return table
+
+
+_OCC_TABLE = _occupancy_color_table()
+
+
 @dataclass
 class _RobotLayer:
     body: QGraphicsPathItem
@@ -236,8 +256,10 @@ class MapWidget(QWidget):
         sc.addItem(self._gridlines)
 
         self._scan = QGraphicsPathItem()
-        self._scan.setPen(QPen(QColor(theme.SCAN_COLOR), 0))
-        self._scan.setBrush(QBrush(QColor(theme.SCAN_COLOR)))
+        scan_color = QColor(theme.SCAN_COLOR)
+        scan_color.setAlpha(215)             # live overlay, not map content
+        self._scan.setPen(QPen(Qt.NoPen))
+        self._scan.setBrush(QBrush(scan_color))
         self._scan.setZValue(3)
         sc.addItem(self._scan)
         self._last_scan_build = 0.0
@@ -421,13 +443,12 @@ class MapWidget(QWidget):
         except (KeyError, ValueError, zlib.error):
             return
 
-        img = np.zeros((h, w), dtype=np.uint8)
-        img[grid == 0] = 1
-        img[grid > 50] = 2
+        img = np.full((h, w), 255, dtype=np.uint8)       # 255 = unknown
+        known = grid >= 0
+        img[known] = np.minimum(grid[known], 100).astype(np.uint8)
         img = np.ascontiguousarray(np.flipud(img))
         qimg = QImage(img.data, w, h, w, QImage.Format_Indexed8)
-        qimg.setColorTable([qRgb(*theme.MAP_UNKNOWN), qRgb(*theme.MAP_FREE),
-                            qRgb(*theme.MAP_OCCUPIED)])
+        qimg.setColorTable(_OCC_TABLE)
         pixmap = QPixmap.fromImage(qimg.copy())
 
         ox, oy = payload['ox'], payload['oy']
@@ -555,7 +576,7 @@ class MapWidget(QWidget):
         path = QPainterPath()
         step = max(1, len(px) // 360)
         for i in range(0, len(px), step):
-            path.addEllipse(QPointF(float(px[i]), float(py[i])), 0.02, 0.02)
+            path.addEllipse(QPointF(float(px[i]), float(py[i])), 0.016, 0.016)
         self._scan.setPath(path)
 
     # ════════ goal ════════

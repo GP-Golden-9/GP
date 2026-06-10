@@ -70,6 +70,9 @@ class CommandBar(QToolBar):
                           'font-weight:700; letter-spacing:2px;')
         self.addWidget(lbl)
         self.model_combo = QComboBox()
+        # NoFocus like every other control: a focused combo would swallow
+        # WASD/arrows (and arrows would silently switch the model!)
+        self.model_combo.setFocusPolicy(Qt.NoFocus)
         for name, path in models:
             self.model_combo.addItem(name, path)
         idx = self.model_combo.findText(default_model)

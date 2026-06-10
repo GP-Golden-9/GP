@@ -47,6 +47,7 @@ class DiagnosticsPanel(QWidget):
         top = QHBoxLayout()
         top.addWidget(QLabel('Robot:'))
         self.combo = QComboBox()
+        self.combo.setFocusPolicy(Qt.NoFocus)   # keys belong to teleop
         for p in robots:
             self.combo.addItem(f'{p.name} · {p.id}', p.id)
         self.combo.currentIndexChanged.connect(lambda _i: self._rebuild_actions())

@@ -709,8 +709,13 @@ class MainWindow(QMainWindow):
         if e.type() == e.Type.KeyPress and e.key() == Qt.Key_Escape:
             self.keyPressEvent(e)
             return True
+        # Only widgets that take TEXT keep their keystrokes. A plain combo
+        # box does NOT qualify — exempting it routed WASD into the model
+        # selector for the entire session (field regression 2026-06-11:
+        # the combo grabbed initial focus and teleop went dead).
         fw = QApplication.focusWidget()
-        if isinstance(fw, (QComboBox, QLineEdit, QAbstractSpinBox)) or \
+        if isinstance(fw, (QLineEdit, QAbstractSpinBox)) or \
+                (isinstance(fw, QComboBox) and fw.isEditable()) or \
                 (isinstance(fw, (QPlainTextEdit, QTextEdit))
                  and not fw.isReadOnly()):
             return super().eventFilter(obj, e)
