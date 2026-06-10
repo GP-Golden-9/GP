@@ -319,11 +319,11 @@ class MapWidget(QWidget):
         fit.clicked.connect(lambda: self.fit_map(from_button=True))
         self.btn_follow = tool('FOLLOW', 'Keep the active robot centered')
         self.btn_follow.toggled.connect(lambda on: setattr(self, '_follow', on))
-        
+
         sep2 = QLabel('│')
         sep2.setStyleSheet(f'color:{theme.BORDER};')
         bar.addWidget(sep2)
-        
+
         reset = tool('⟳ RESET MAP', 'Restart SLAM to clear the map completely',
                      checkable=False)
         reset.setStyleSheet(f'color:{theme.ACCENT};')

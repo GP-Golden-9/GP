@@ -39,6 +39,13 @@ def test_ack_echoes_cmd_id():
     assert ack.payload['cmd_type'] == 'cmd.goal'
 
 
+def test_reset_map_is_a_known_exactly_once_command():
+    # A retried cmd.reset_map must NOT restart the robot stack twice.
+    env = make_command(cmds.CMD_RESET_MAP, {}, seq=1, run_id='r', src='dash')
+    assert validate_command(env) == env.payload['cmd_id']
+    assert cmds.CMD_RESET_MAP in cmds.EXACTLY_ONCE
+
+
 def test_deduper_lru():
     d = CommandDeduper(capacity=2)
     assert d.seen_before('a') is False

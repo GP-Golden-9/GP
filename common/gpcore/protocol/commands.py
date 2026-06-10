@@ -29,11 +29,11 @@ CMD_RESET_MAP = 'cmd.reset_map'  # {} — restart SLAM to clear map
 
 ALL_COMMANDS = frozenset({
     CMD_DRIVE, CMD_ESTOP, CMD_PUMP, CMD_SERVO, CMD_EXPLORE, CMD_GOAL,
-    CMD_SPEED, CMD_PING, CMD_RESET_MAP
+    CMD_SPEED, CMD_PING, CMD_RESET_MAP,
 })
 
 # Commands that must execute exactly once (retries must be deduped):
-EXACTLY_ONCE = frozenset({CMD_PUMP, CMD_SERVO, CMD_GOAL})
+EXACTLY_ONCE = frozenset({CMD_PUMP, CMD_SERVO, CMD_GOAL, CMD_RESET_MAP})
 
 ACK_TIMEOUT_S = 0.30
 ACK_RETRIES = 2

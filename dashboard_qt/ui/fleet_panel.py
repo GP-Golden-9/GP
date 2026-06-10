@@ -24,7 +24,7 @@ class RobotCard(QFrame):
         self.prof = prof
         self.setStyleSheet(
             f'QFrame{{background:{theme.SURFACE_2}; border:1px solid {theme.BORDER};'
-            'border-radius:10px;}} QLabel{border:none;}')
+            'border-radius:10px;} QLabel{border:none;}')
         lay = QVBoxLayout(self)
         lay.setContentsMargins(10, 8, 10, 9)
         lay.setSpacing(5)
@@ -105,7 +105,7 @@ class RobotCard(QFrame):
         border = theme.ACCENT if active else theme.BORDER
         self.setStyleSheet(
             f'QFrame{{background:{theme.SURFACE_2}; border:1px solid {border};'
-            'border-radius:10px;}} QLabel{border:none;}')
+            'border-radius:10px;} QLabel{border:none;}')
 
     def set_staleness(self, staleness: dict) -> None:
         for key, lbl in self._leds.items():

@@ -49,12 +49,17 @@ laptop-side by `transport/esp32_link.py` behind the same signal surface.
 
 Types: `cmd.drive{vx,wz}` `cmd.estop{engage}` `cmd.pump{on}`
 `cmd.servo{deg}` `cmd.explore{enable}` `cmd.goal{x,y}` `cmd.speed{value}`
-`cmd.ping{}`. Every command carries a `cmd_id`; the robot replies
-`ack{cmd_id, cmd_type, ok, detail}`.
+`cmd.ping{}` `cmd.reset_map{}`. Every command carries a `cmd_id`; the robot
+replies `ack{cmd_id, cmd_type, ok, detail}`.
 
 * **Retry:** ACK timeout 300 ms, ×2 retries with the SAME `cmd_id`; the
-  robot dedupes (64-entry LRU), so `cmd.pump`/`cmd.servo`/`cmd.goal` are
-  exactly-once even under retry.
+  robot dedupes (64-entry LRU), so `cmd.pump`/`cmd.servo`/`cmd.goal`/
+  `cmd.reset_map` are exactly-once even under retry.
+* **Map reset:** `cmd.reset_map` is routed by the console to the robot that
+  publishes the map (the mapper). Its gateway ACKs `restarting …`, then
+  restarts its own `gp-<robot>.service` — SLAM comes back with a fresh map.
+  Requires a passwordless sudoers entry for
+  `systemctl restart gp-<robot>.service` on the Pi.
 * **Drive stream:** the console repeats `cmd.drive` at 10 Hz while a control
   is held. Gateway deadman: 600 ms of silence while velocity ≠ 0 → stop.
   Layered below it: bridge deadman 0.8 s → firmware watchdog 1 s.

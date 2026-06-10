@@ -14,6 +14,7 @@ Channels (PUB unless noted):
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Callable, Dict, Optional, Tuple
 
@@ -69,16 +70,22 @@ class GatewayServer:
         self._handlers: Dict[str, CommandHandler] = {}
         self.stats = {'cmds': 0, 'acks': 0, 'rejected': 0, 'deduped': 0}
 
+        # The gateway's command tick runs in its own executor thread while
+        # ROS callbacks publish from another — ZMQ sockets are NOT
+        # thread-safe, so all publishing is serialized here.
+        self._pub_lock = threading.Lock()
+
     # ── publishing ────────────────────────────────────────────────────────
     def publish(self, channel: str, msg_type: str, payload: dict) -> int:
-        seq = self._seq.get(msg_type, 0) + 1
-        self._seq[msg_type] = seq
-        env = make_envelope(msg_type, payload, seq=seq, run_id=self.run_id,
-                            src=self.src)
-        try:
-            self._pub[channel].send(encode(env), zmq.NOBLOCK)
-        except zmq.Again:
-            pass  # HWM hit — slow/absent subscriber must not block the robot
+        with self._pub_lock:
+            seq = self._seq.get(msg_type, 0) + 1
+            self._seq[msg_type] = seq
+            env = make_envelope(msg_type, payload, seq=seq, run_id=self.run_id,
+                                src=self.src)
+            try:
+                self._pub[channel].send(encode(env), zmq.NOBLOCK)
+            except zmq.Again:
+                pass  # HWM hit — slow/absent subscriber must not block robot
         return seq
 
     # ── command handling ──────────────────────────────────────────────────

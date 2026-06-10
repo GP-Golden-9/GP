@@ -33,8 +33,9 @@ import numpy as np
 
 from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QKeyEvent
-from PySide6.QtWidgets import (QApplication, QDockWidget, QLabel, QMainWindow,
-                               QMessageBox, QWidget)
+from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QComboBox,
+                               QDockWidget, QLabel, QLineEdit, QMainWindow,
+                               QMessageBox, QPlainTextEdit, QTextEdit, QWidget)
 
 from alerts import AlertManager, AlertState
 from gpcore.protocol import commands as cmds
@@ -81,6 +82,7 @@ class MainWindow(QMainWindow):
         self._hfov = 62.0      # camera horizontal FOV for detection projection
         self._grid: np.ndarray | None = None      # latest occupancy (for A*)
         self._grid_meta: tuple | None = None      # (res, ox, oy)
+        self._map_source_id: str | None = None    # who publishes the map (SLAM)
 
         self.setWindowTitle('GP Operations Center')
         self.resize(1560, 920)
@@ -414,8 +416,23 @@ class MainWindow(QMainWindow):
                   f'({x:.2f}, {y:.2f}, {th:.2f} rad)')
 
     def _reset_map_clicked(self) -> None:
-        self._client().send(cmds.CMD_RESET_MAP, {})
-        self._log(f'{self.active_id} SLAM reset requested')
+        # SLAM runs on the robot that publishes the map (the mapper) — route
+        # there regardless of which robot is active.
+        target = self._map_source_id or self.active_id
+        client = self.cmd.get(target)
+        if client is None:
+            self._log(f'RESET MAP: no command link to {target}')
+            return
+        if QMessageBox.question(
+                self, 'Reset map',
+                f'Restart SLAM on {target}?\n\nThe current map is discarded '
+                'and the robot stack restarts (~10 s offline).',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No) != QMessageBox.Yes:
+            return
+        client.send(cmds.CMD_RESET_MAP, {})
+        self._log(f'{target} SLAM reset requested — map will rebuild')
+        self.mission.cancel('cancelled by map reset')
         self.map.clear_markers()
         self.map.clear_path()
         self.map.clear_goal()
@@ -539,7 +556,8 @@ class MainWindow(QMainWindow):
             self.map.update_scan(payload, (pose.x, pose.y, pose.th))
 
     def _on_map(self, robot_id: str, payload: dict) -> None:
-        self.map.update_map(payload)              # robot1 is the map source
+        self._map_source_id = robot_id            # whoever maps owns SLAM
+        self.map.update_map(payload)
         try:                                      # keep a copy for the planner
             raw = payload['data']
             if payload.get('enc') == 'zlib':
@@ -680,8 +698,24 @@ class MainWindow(QMainWindow):
     # Keyboard (same 10 Hz stream as the joystick)
     # ══════════════════════════════════════════════════════════════════════
     def eventFilter(self, obj, e) -> bool:
+        """App-wide: drive keys reach the teleop stream even when a dock,
+        the map or a slider holds focus. Two carve-outs:
+
+        * Escape (E-STOP) is ALWAYS intercepted — operator panic key.
+        * Other keys pass through while a widget that legitimately consumes
+          keystrokes (combo box, line edit, spin box, editable text) has
+          focus, so typing never drives the robot.
+        """
+        if e.type() == e.Type.KeyPress and e.key() == Qt.Key_Escape:
+            self.keyPressEvent(e)
+            return True
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QComboBox, QLineEdit, QAbstractSpinBox)) or \
+                (isinstance(fw, (QPlainTextEdit, QTextEdit))
+                 and not fw.isReadOnly()):
+            return super().eventFilter(obj, e)
         if e.type() == e.Type.KeyPress:
-            if e.key() in KEY_VECTORS or e.key() in (Qt.Key_Escape, Qt.Key_F9, Qt.Key_Space):
+            if e.key() in KEY_VECTORS or e.key() in (Qt.Key_F9, Qt.Key_Space):
                 self.keyPressEvent(e)
                 return True
         elif e.type() == e.Type.KeyRelease:

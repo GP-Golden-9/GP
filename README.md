@@ -39,6 +39,9 @@ hide — the layout persists between sessions.
   other robots are dropped onto the map once with the **SET POSE** tool
   (click = position, drag = heading; RViz-style) and every pose, detection,
   and goal click is transformed between frames from then on.
+- **One-click SLAM reset** — **RESET MAP** on the map toolbar restarts the
+  mapper's robot stack; the console clears markers and routes while the map
+  rebuilds from scratch.
 - **Professional teleop** — proportional virtual joystick (drag = continuous
   speed/turn, spring-back stop) and WASD, both feeding a 10 Hz deadman-guarded
   command stream; speed presets; per-robot E-STOP; fleet-wide **ALL STOP**.

@@ -39,6 +39,7 @@ class CommandBar(QToolBar):
     def __init__(self, robots, models: list[tuple[str, str]],
                  default_model: str, run_id: str, parent=None):
         super().__init__('Command', parent)
+        self.setObjectName('commandBar')   # required for saveState/restoreState
         self.setMovable(False)
 
         title = QLabel('GP <b>OPERATIONS</b> CENTER')

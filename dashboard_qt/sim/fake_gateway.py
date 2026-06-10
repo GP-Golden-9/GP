@@ -282,6 +282,16 @@ def main() -> int:
         robot.goto.set_goal(float(env.payload['x']), float(env.payload['y']))
         return True, 'ok'
 
+    # RESET MAP: the real gateway restarts the SLAM stack; the sim mimics the
+    # observable effect — the map goes blank, then the arena "rebuilds".
+    map_reset_at = {'t': -1e9}
+
+    def h_reset_map(env):
+        if not is_mapper:
+            return True, 'restarting (no SLAM on this robot)'
+        map_reset_at['t'] = time.monotonic()
+        return True, 'restarting gp-robot1.service (sim)'
+
     server.set_handler(cmds.CMD_DRIVE, h_drive)
     server.set_handler(cmds.CMD_ESTOP, h_estop)
     server.set_handler(cmds.CMD_PUMP, h_pump)
@@ -289,6 +299,7 @@ def main() -> int:
     server.set_handler(cmds.CMD_EXPLORE, h_explore)
     server.set_handler(cmds.CMD_GOAL, h_goal)
     server.set_handler(cmds.CMD_SPEED, lambda env: (True, 'ok'))
+    server.set_handler(cmds.CMD_RESET_MAP, h_reset_map)
 
     stop = threading.Event()
     if not is_mapper:                      # only the camera rover streams video
@@ -304,6 +315,8 @@ def main() -> int:
         'arena': '4x4m/4rooms'}})
 
     grid_z = zlib.compress(grid.tobytes(), 3)
+    unknown_z = zlib.compress(np.full_like(grid, -1).tobytes(), 3)
+    MAP_REBUILD_S = 3.0      # how long the map stays blank after a reset
     t0 = time.monotonic()
     last_tele = last_scan = last_map = last_health = 0.0
     try:
@@ -345,9 +358,11 @@ def main() -> int:
                           args.silence_map_at <= t < args.silence_map_at + 10)
             if is_mapper and now - last_map >= 1.0 and not map_silent:
                 last_map = now
+                rebuilding = (now - map_reset_at['t']) < MAP_REBUILD_S
                 server.publish('map', ch.MAP_GRID, {
                     'w': GRID_N, 'h': GRID_N, 'res': RES,
-                    'ox': ORIGIN, 'oy': ORIGIN, 'enc': 'zlib', 'data': grid_z})
+                    'ox': ORIGIN, 'oy': ORIGIN, 'enc': 'zlib',
+                    'data': unknown_z if rebuilding else grid_z})
             if now - last_health >= 1.0:
                 last_health = now
                 server.publish('health', ch.HEALTH, {

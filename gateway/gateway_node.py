@@ -24,15 +24,17 @@ import time
 import zlib
 from array import array
 
+import math
+
 import rclpy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import Bool, Float32, Int32MultiArray, String
 
-import math
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
@@ -64,6 +66,7 @@ class GatewayNode(Node):
         super().__init__('gp_gateway')
         self.cfg = cfg
         robot_id = cfg['robot']['id']
+        self.robot_id = robot_id
         self.log = setup_logging('gateway', run_id=run_id)
 
         endpoints = {
@@ -101,8 +104,7 @@ class GatewayNode(Node):
         sub(String, '/nav_status', self._nav_status_cb, 5)
         sub(String, '/accessory_state', self._accessory_cb, 5)
         sub(String, '/robot_log', self._robot_log_cb, 10)
-        
-        from geometry_msgs.msg import PoseWithCovarianceStamped
+        # slam_toolbox's pose — odom fallback for robots with no wheel odometry
         sub(PoseWithCovarianceStamped, '/pose', self._pose_cb, 5)
 
         # ── ROS publishers (commands fan out locally) ──
@@ -125,7 +127,14 @@ class GatewayNode(Node):
         s(cmds.CMD_RESET_MAP, self._h_reset_map)
 
         # ── timers ──
-        self.create_timer(0.02, self._tick_commands)          # 50 Hz — ZMQ cmd poll
+        # The command poll gets its OWN callback group: with the default
+        # (shared, mutually exclusive) group the MultiThreadedExecutor never
+        # actually runs it in parallel, and a slow /map or /scan callback on
+        # the Pi 3B+ still starves ACKs. Cross-thread publishes are safe —
+        # GatewayServer.publish is locked.
+        self._cmd_group = MutuallyExclusiveCallbackGroup()
+        self.create_timer(0.02, self._tick_commands,           # 50 Hz cmd poll
+                          callback_group=self._cmd_group)
         self.create_timer(1.0 / TELE_HZ, self._tick_telemetry)
         self.create_timer(1.0 / HEALTH_HZ, self._tick_health)
 
@@ -152,7 +161,6 @@ class GatewayNode(Node):
         q = msg.pose.pose.orientation
         siny = 2.0 * (q.w * q.z + q.x * q.y)
         cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        import math
         self.state['odom'] = {
             'x': round(p.x, 4), 'y': round(p.y, 4),
             'th': round(math.atan2(siny, cosy), 4),
@@ -161,17 +169,16 @@ class GatewayNode(Node):
         }
         self.health.touch('odom')
 
-    def _pose_cb(self, msg):
-        # Fallback if there is no true /odom publisher (like on Robot 1)
-        # We just get the pose from slam_toolbox to populate the dashboard UI
+    def _pose_cb(self, msg: PoseWithCovarianceStamped):
+        # Fallback if there is no true /odom publisher (like on Robot 1):
+        # take the pose from slam_toolbox to populate the dashboard UI.
+        odom = self.state.get('odom')
+        if odom and odom.get('v', 0.0) != 0.0:
+            return                      # true odometry is flowing — keep it
         p = msg.pose.pose.position
         q = msg.pose.pose.orientation
         siny = 2.0 * (q.w * q.z + q.x * q.y)
         cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        import math
-        # Don't overwrite if actual odom is flowing (with velocities)
-        if self.state.get('odom') and 'v' in self.state['odom'] and self.state['odom']['v'] != 0.0:
-             pass # keep true odom
         self.state['odom'] = {
             'x': round(p.x, 4), 'y': round(p.y, 4),
             'th': round(math.atan2(siny, cosy), 4),
@@ -289,11 +296,14 @@ class GatewayNode(Node):
         return True, 'ok'
 
     def _h_reset_map(self, env):
-        import os
-        self.log.warning('Reset map requested: restarting robot services.')
-        # Running in the background to allow the ACK to be sent before shutdown
-        os.system('(sleep 0.5; sudo systemctl restart gp-robot1.service) &')
-        return True, 'restarting'
+        # Restart THIS robot's stack (SLAM included) to start a fresh map.
+        # The dashboard routes this to the mapper; the service name must
+        # match the robot we run on, not a hardcoded one.
+        service = f'gp-{self.robot_id}.service'
+        self.log.warning('reset map requested — restarting %s', service)
+        # Backgrounded so the ACK leaves before systemd kills us.
+        os.system(f'(sleep 0.5; sudo systemctl restart {service}) &')
+        return True, f'restarting {service}'
 
     # ════════ periodic ════════
     def _tick_commands(self):
