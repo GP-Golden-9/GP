@@ -76,6 +76,7 @@ class _Canvas(QGraphicsView):
     zoomChanged = Signal(float)                # px per meter
     clicked = Signal(float, float)             # NAV / MARK click
     posePicked = Signal(float, float, float)   # SET POSE commit
+    userNavigated = Signal()                   # manual zoom/pan → stop auto-fit
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -86,6 +87,12 @@ class _Canvas(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate)
         self.setMouseTracking(True)
+        # No scrollbars, and the scene rect is LOCKED to the map bounds in
+        # update_map(): otherwise items outside the arena (laser rays
+        # escaping through doors reach 6 m out) silently grow the auto
+        # scene rect and DRIFT the whole view off-center.
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scale(120, -120)                  # world: x right, y UP
 
         self.mode = MODE_NAV
@@ -105,11 +112,13 @@ class _Canvas(QGraphicsView):
         if MIN_PPM <= self.ppm() * factor <= MAX_PPM:
             self.scale(factor, factor)
             self.zoomChanged.emit(self.ppm())
+            self.userNavigated.emit()
 
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.RightButton:
             self._pan_last = e.position()
             self.setCursor(Qt.ClosedHandCursor)
+            self.userNavigated.emit()
             return
         if e.button() == Qt.LeftButton:
             p = self.mapToScene(e.position().toPoint())
@@ -237,6 +246,19 @@ class MapWidget(QWidget):
         self._goal_line.setPen(pen)
         self._goal_line.setZValue(4)
         sc.addItem(self._goal_line)
+
+        # planned route (A* output): line + waypoint dots
+        self._path_item = QGraphicsPathItem()
+        ppen = QPen(QColor(theme.ACCENT), 0.035)
+        ppen.setCapStyle(Qt.RoundCap)
+        self._path_item.setPen(ppen)
+        self._path_item.setZValue(4.5)
+        sc.addItem(self._path_item)
+        self._path_dots = QGraphicsPathItem()
+        self._path_dots.setPen(QPen(QColor(theme.ACCENT), 0))
+        self._path_dots.setBrush(QBrush(QColor(theme.ACCENT)))
+        self._path_dots.setZValue(4.6)
+        sc.addItem(self._path_dots)
         self._goal_mark = QGraphicsPathItem()
         self._goal_mark.setPen(QPen(QColor(theme.GOAL_COLOR), 0.025))
         self._goal_mark.setZValue(5)
@@ -247,14 +269,18 @@ class MapWidget(QWidget):
         self._active_id = ''
         self._markers: list[Marker] = []
         self._have_grid = False
-        self._fitted_once = False
         self._follow = False
+        # auto-fit keeps the whole map filling the canvas (first map, dock
+        # resizes, map growth) until the operator zooms/pans manually
+        self._user_nav = False
 
         self._build_overlay()
         self.canvas.cursorMoved.connect(self._on_cursor)
         self.canvas.zoomChanged.connect(self._scalebar.set_ppm)
         self.canvas.clicked.connect(self._on_click)
         self.canvas.posePicked.connect(self.posePicked)
+        self.canvas.userNavigated.connect(
+            lambda: setattr(self, '_user_nav', True))
 
     # ════════ overlay (toolbar / chips on the canvas) ════════
     def _build_overlay(self) -> None:
@@ -286,8 +312,9 @@ class MapWidget(QWidget):
         sep.setStyleSheet(f'color:{theme.BORDER};')
         bar.addWidget(sep)
 
-        fit = tool('FIT', 'Fit the whole map in view', checkable=False)
-        fit.clicked.connect(self.fit_map)
+        fit = tool('FIT', 'Fit the whole map in view (re-enables auto-fit)',
+                   checkable=False)
+        fit.clicked.connect(lambda: self.fit_map(from_button=True))
         self.btn_follow = tool('FOLLOW', 'Keep the active robot centered')
         self.btn_follow.toggled.connect(lambda on: setattr(self, '_follow', on))
 
@@ -321,6 +348,8 @@ class MapWidget(QWidget):
 
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
+        if self._have_grid and not self._user_nav:
+            self.fit_map()
         self._toolbar.move(10, 10)
         self._toolbar.adjustSize()
         self._scalebar.move(12, self.canvas.height() - 30)
@@ -404,9 +433,11 @@ class MapWidget(QWidget):
         self._have_grid = True
 
         self._rebuild_gridlines(ox, oy, w * res, h * res)
-        if not self._fitted_once:
+        # lock the scene to the map (+ pan margin) — see _Canvas.__init__
+        rect = self._grid_item.mapRectToScene(self._grid_item.boundingRect())
+        self.canvas.scene().setSceneRect(rect.adjusted(-3, -3, 3, 3))
+        if not self._user_nav:
             self.fit_map()
-            self._fitted_once = True
 
     def _rebuild_gridlines(self, ox: float, oy: float, w_m: float, h_m: float) -> None:
         path = QPainterPath()
@@ -526,6 +557,25 @@ class MapWidget(QWidget):
         self._goal_mark.setPath(QPainterPath())
         self._goal_line.setPath(QPainterPath())
 
+    def set_path(self, start: tuple[float, float],
+                 waypoints: list[tuple[float, float]]) -> None:
+        """Planned route from the robot through every waypoint."""
+        if not waypoints:
+            self.clear_path()
+            return
+        line = QPainterPath()
+        line.moveTo(*start)
+        dots = QPainterPath()
+        for (x, y) in waypoints:
+            line.lineTo(x, y)
+            dots.addEllipse(QPointF(x, y), 0.05, 0.05)
+        self._path_item.setPath(line)
+        self._path_dots.setPath(dots)
+
+    def clear_path(self) -> None:
+        self._path_item.setPath(QPainterPath())
+        self._path_dots.setPath(QPainterPath())
+
     def _draw_goal(self) -> None:
         if self._goal is None:
             return
@@ -605,9 +655,13 @@ class MapWidget(QWidget):
     def center_on(self, x: float, y: float) -> None:
         self.canvas.centerOn(x, y)
 
-    def fit_map(self) -> None:
+    def fit_map(self, *, from_button: bool = False) -> None:
+        if from_button:
+            self._user_nav = False         # FIT re-engages auto-fit
         if self._grid_item is not None:
-            self.canvas.fitInView(self._grid_item, Qt.KeepAspectRatio)
+            rect = self._grid_item.mapRectToScene(
+                self._grid_item.boundingRect()).adjusted(-0.25, -0.25, 0.25, 0.25)
+            self.canvas.fitInView(rect, Qt.KeepAspectRatio)
             if self.canvas.ppm() > MAX_PPM:
                 f = MAX_PPM / self.canvas.ppm()
                 self.canvas.scale(f, f)

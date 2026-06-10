@@ -26,7 +26,10 @@ from __future__ import annotations
 import glob
 import os
 import time
+import zlib
 from functools import partial
+
+import numpy as np
 
 from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QKeyEvent
@@ -44,9 +47,11 @@ from ui.bottom_panel import BottomPanel
 from ui.command_bar import CommandBar
 from ui.fleet_panel import FleetPanel
 from ui.map.map_widget import MapWidget
+from ui.map.planner import plan_path
 from ui.map.projection import (FrameOffset, Pose, apply_offset,
                                detection_to_world, offset_from_alignment,
                                world_point_to_robot)
+from ui.mission import MissionExecutor
 from ui.ops_panel import OpsPanel
 from ui.video_panel import VideoPanel
 
@@ -74,6 +79,8 @@ class MainWindow(QMainWindow):
         self._last_sb = 0.0
         self._last_fire_marker = 0.0
         self._hfov = 62.0      # camera horizontal FOV for detection projection
+        self._grid: np.ndarray | None = None      # latest occupancy (for A*)
+        self._grid_meta: tuple | None = None      # (res, ox, oy)
 
         self.setWindowTitle('GP Operations Center')
         self.resize(1560, 920)
@@ -167,6 +174,12 @@ class MainWindow(QMainWindow):
         self.map.set_active_robot(self.active_id)
         self.map.goalRequested.connect(self._goal_clicked)
         self.map.posePicked.connect(self._pose_picked)
+
+        # planner output is executed waypoint-by-waypoint by the mission
+        self.mission = MissionExecutor(self._send_goal_world, parent=self)
+        self.mission.progress.connect(self._log)
+        self.mission.waypointActive.connect(self._on_waypoint_active)
+        self.mission.missionFinished.connect(self._on_mission_finished)
         self.map.markerPlaced.connect(
             lambda x, y: self.map.add_marker('PIN', x, y, robot='operator',
                                              t_wall=time.strftime('%H:%M:%S')))
@@ -301,22 +314,29 @@ class MainWindow(QMainWindow):
         return self.cmd[self.active_id]
 
     def _drive(self, vx: float, wz: float) -> None:
+        if (vx or wz) and self.mission.active:    # operator takes over
+            self.mission.cancel('cancelled by manual drive')
+            self.map.clear_path()
         self._client().drive(vx, wz)
 
     def _stop(self) -> None:
         self._client().drive(0.0, 0.0)
 
     def _estop(self, engage: bool) -> None:
+        if engage:
+            self.mission.cancel('cancelled by e-stop')
         self._client().estop(engage)
         self._log(f'E-STOP {"ENGAGED" if engage else "released"} → {self.active_id}')
 
     def _all_stop(self) -> None:
+        self.mission.cancel('cancelled by ALL STOP')
         for rid, client in self.cmd.items():
             client.estop(True)
         self.ops.set_estop(True)
         self._log('ALL STOP — every robot e-stopped (release per robot)')
 
     def _mode_changed(self, mode: str) -> None:
+        self.mission.cancel('cancelled by mode change')
         enable = (mode == 'auto')
         self._client().send(cmds.CMD_EXPLORE, {'enable': enable})
         if not enable:
@@ -337,12 +357,48 @@ class MainWindow(QMainWindow):
         self._client().send(cmds.CMD_SERVO, {'deg': deg})
 
     def _goal_clicked(self, x: float, y: float) -> None:
-        # click is in the SHARED frame; the robot executes in ITS frame
+        """NAVIGATE click: A* over the occupancy grid → waypoint mission.
+
+        The robots only have straight-line goto controllers — sending a far
+        goal directly would drive them into walls. The console plans the
+        safe route (through doors, away from walls) and feeds it leg by leg."""
+        pose = self._aligned_pose(self.active_id)
+        if self._grid is None or pose is None:
+            # no map / no odometry yet → single direct goal (short-range only)
+            self._send_goal_world(x, y)
+            self.map.set_goal(x, y)
+            self._log(f'goal (direct, no map yet) → ({x:.2f}, {y:.2f})')
+            return
+        res, ox, oy = self._grid_meta
+        t0 = time.monotonic()
+        path = plan_path(self._grid, res, ox, oy, (pose.x, pose.y), (x, y))
+        dt_ms = (time.monotonic() - t0) * 1000
+        if path is None:
+            self.statusBar().showMessage(
+                'NO PATH — target unreachable (blocked or unexplored)', 4000)
+            self._log(f'NO PATH to ({x:.2f}, {y:.2f}) — blocked or unexplored '
+                      f'[planned in {dt_ms:.0f} ms]')
+            return
+        self.map.set_goal(*path[-1])
+        self.map.set_path((pose.x, pose.y), path)
+        self._log(f'route planned: {len(path)} leg(s), {dt_ms:.0f} ms')
+        self.mission.start(self.active_id, path)
+
+    def _send_goal_world(self, x: float, y: float) -> None:
+        # shared frame → the executing robot's own odom frame
         rx, ry = world_point_to_robot(x, y, self._offsets[self.active_id])
         self._client().send(cmds.CMD_GOAL, {'x': round(rx, 3), 'y': round(ry, 3)})
-        self.map.set_goal(x, y)
-        self._log(f'goal → shared ({x:.2f}, {y:.2f}) = '
-                  f'{self.active_id} frame ({rx:.2f}, {ry:.2f})')
+
+    def _on_waypoint_active(self, idx: int, total: int, x: float, y: float) -> None:
+        pose = self._aligned_pose(self.active_id)
+        if pose is not None:
+            self.map.set_path((pose.x, pose.y), self.mission.remaining())
+        self.statusBar().showMessage(f'mission: waypoint {idx}/{total}', 3000)
+
+    def _on_mission_finished(self, reason: str) -> None:
+        self.map.clear_path()
+        if reason == 'arrived':
+            self.map.clear_goal()
 
     def _pose_picked(self, x: float, y: float, th: float) -> None:
         odom = self.state[self.active_id].telemetry.get('odom') or \
@@ -359,6 +415,8 @@ class MainWindow(QMainWindow):
         if robot_id == self.active_id:
             self.command_bar.set_active(robot_id)
             return
+        self.mission.cancel('cancelled by robot switch')
+        self.map.clear_path()
         self.ops.set_estop(False)                 # latch belongs to old robot
         self.active_id = robot_id
         self.command_bar.set_active(robot_id)
@@ -403,6 +461,7 @@ class MainWindow(QMainWindow):
         pose = self._aligned_pose(robot_id)
         if pose is not None:
             self.map.update_robot(robot_id, pose.x, pose.y, pose.th)
+            self.mission.update_pose(robot_id, pose.x, pose.y)
             card = self.fleet.cards.get(robot_id)
             if card:
                 import math
@@ -412,8 +471,8 @@ class MainWindow(QMainWindow):
         if not robot_id == self.active_id:
             return
         nav = payload.get('nav_status', '')
-        if nav.startswith('ARRIVED'):
-            self.map.clear_goal()
+        if nav.startswith('ARRIVED') and not self.mission.active:
+            self.map.clear_goal()       # mission mode clears its own goal
         servo = payload.get('servo_deg')
         if servo is not None:
             self.ops.set_servo_feedback(int(servo))
@@ -438,6 +497,15 @@ class MainWindow(QMainWindow):
 
     def _on_map(self, robot_id: str, payload: dict) -> None:
         self.map.update_map(payload)              # robot1 is the map source
+        try:                                      # keep a copy for the planner
+            raw = payload['data']
+            if payload.get('enc') == 'zlib':
+                raw = zlib.decompress(raw)
+            self._grid = np.frombuffer(raw, dtype=np.int8).reshape(
+                (payload['h'], payload['w']))
+            self._grid_meta = (payload['res'], payload['ox'], payload['oy'])
+        except (KeyError, ValueError, zlib.error):
+            pass
 
     def _on_health(self, robot_id: str, payload: dict) -> None:
         self.drawer.diagnostics.update_vitals(robot_id, payload)
