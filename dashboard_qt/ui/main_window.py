@@ -175,6 +175,7 @@ class MainWindow(QMainWindow):
         self.map.set_active_robot(self.active_id)
         self.map.goalRequested.connect(self._goal_clicked)
         self.map.posePicked.connect(self._pose_picked)
+        self.map.resetMapRequested.connect(self._reset_map_clicked)
 
         # planner output is executed waypoint-by-waypoint by the mission
         self.mission = MissionExecutor(self._send_goal_world, parent=self)
@@ -411,6 +412,13 @@ class MainWindow(QMainWindow):
         self.map.reset_mode()
         self._log(f'{self.active_id} aligned to map at '
                   f'({x:.2f}, {y:.2f}, {th:.2f} rad)')
+
+    def _reset_map_clicked(self) -> None:
+        self._client().send(cmds.CMD_RESET_MAP, {})
+        self._log(f'{self.active_id} SLAM reset requested')
+        self.map.clear_markers()
+        self.map.clear_path()
+        self.map.clear_goal()
 
     def _switch_robot(self, robot_id: str) -> None:
         if robot_id == self.active_id:

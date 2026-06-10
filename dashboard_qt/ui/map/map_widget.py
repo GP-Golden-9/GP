@@ -219,6 +219,7 @@ class MapWidget(QWidget):
     posePicked = Signal(float, float, float)   # for the ACTIVE robot
     markerPlaced = Signal(float, float)
     markersChanged = Signal(list)              # list[Marker]
+    resetMapRequested = Signal()               # operator asked to clear the map
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -318,6 +319,15 @@ class MapWidget(QWidget):
         fit.clicked.connect(lambda: self.fit_map(from_button=True))
         self.btn_follow = tool('FOLLOW', 'Keep the active robot centered')
         self.btn_follow.toggled.connect(lambda on: setattr(self, '_follow', on))
+        
+        sep2 = QLabel('│')
+        sep2.setStyleSheet(f'color:{theme.BORDER};')
+        bar.addWidget(sep2)
+        
+        reset = tool('⟳ RESET MAP', 'Restart SLAM to clear the map completely',
+                     checkable=False)
+        reset.setStyleSheet(f'color:{theme.ACCENT};')
+        reset.clicked.connect(self.resetMapRequested.emit)
 
         layers_btn = QToolButton()
         layers_btn.setText('LAYERS ▾')

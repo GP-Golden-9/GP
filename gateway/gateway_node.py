@@ -122,6 +122,7 @@ class GatewayNode(Node):
         s(cmds.CMD_EXPLORE, self._h_explore)
         s(cmds.CMD_GOAL, self._h_goal)
         s(cmds.CMD_SPEED, self._h_speed)
+        s(cmds.CMD_RESET_MAP, self._h_reset_map)
 
         # ── timers ──
         self.create_timer(0.02, self._tick_commands)          # 50 Hz — ZMQ cmd poll
@@ -286,6 +287,13 @@ class GatewayNode(Node):
     def _h_speed(self, env):
         self.pub_speed.publish(Float32(data=float(env.payload.get('value', 0.0))))
         return True, 'ok'
+
+    def _h_reset_map(self, env):
+        import os
+        self.log.warning('Reset map requested: restarting robot services.')
+        # Running in the background to allow the ACK to be sent before shutdown
+        os.system('(sleep 0.5; sudo systemctl restart gp-robot1.service) &')
+        return True, 'restarting'
 
     # ════════ periodic ════════
     def _tick_commands(self):

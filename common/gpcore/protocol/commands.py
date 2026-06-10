@@ -25,10 +25,11 @@ CMD_EXPLORE = 'cmd.explore'  # {enable: bool}
 CMD_GOAL    = 'cmd.goal'     # {x: float, y: float}
 CMD_SPEED   = 'cmd.speed'    # {value: float 0..1}
 CMD_PING    = 'cmd.ping'     # {} — link liveness check
+CMD_RESET_MAP = 'cmd.reset_map'  # {} — restart SLAM to clear map
 
 ALL_COMMANDS = frozenset({
     CMD_DRIVE, CMD_ESTOP, CMD_PUMP, CMD_SERVO, CMD_EXPLORE, CMD_GOAL,
-    CMD_SPEED, CMD_PING,
+    CMD_SPEED, CMD_PING, CMD_RESET_MAP
 })
 
 # Commands that must execute exactly once (retries must be deduped):
