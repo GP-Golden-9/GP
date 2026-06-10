@@ -6,8 +6,6 @@
                                                # gateway and targets localhost
     python dashboard_qt/main.py --no-ai        # skip YOLO even if installed
 
-The old NiceGUI dashboard (dashboard/dash.py) remains untouched and runnable
-until this console passes its parity gate.
 """
 
 from __future__ import annotations

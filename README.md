@@ -72,8 +72,8 @@ hide — the layout persists between sessions.
 **No DDS over WiFi.** Each Pi is a self-contained ROS 2 island
 (`ROS_LOCALHOST_ONLY=1`); the per-robot *gateway* is the only network
 doorway, speaking a sequence-numbered, ACKed msgpack/ZMQ protocol with
-per-stream freshness tracking. rosbridge remains available as a legacy
-fallback during migration.
+per-stream freshness tracking. (A robot-side rosbridge can still be enabled
+per launch argument for ROS-level debugging.)
 
 **Four-layer safety chain.** Console drive stream (10 Hz) → gateway deadman
 (0.6 s) → bridge deadman (0.8 s) → firmware watchdog (1–2 s, also kills the
@@ -114,7 +114,7 @@ over the air (Arduino IDE → network port `robot3`).
 | `firmware/robot1_controller_v3` | Mega 2560 | ✅ compile-verified (2% flash) — non-blocking parser, watchdog-honest diagnostics |
 | `firmware/robot2_controller_v5` | Mega 2560 | ✅ compile-verified (9% flash) — pump (5 s hard limit), slew-limited arm servo, e-stop latch, ACKed commands |
 | `firmware/robot3_controller_v2` | ESP32 | ✅ compile-verified (79% flash, 16% RAM) — command watchdog, WiFi self-heal, latched gas alarm, OTA, secrets out of source |
-| `arduino/…` (v2/v4 generations) | Mega 2560 | kept as flash-back rollbacks |
+| `arduino/robot2_controller_v4` + v1 sketches | Mega/ESP32 | ✅ kept as compile-verified flash-back rollbacks |
 
 Every firmware change goes through `docs/bench_robot2_v5.md` (power-budget
 gate + hardware-in-the-loop drills, including pull-the-cable-mid-spray)
@@ -137,14 +137,15 @@ common/gpcore/      ROS-free core: protocol, serial parsers, kinematics, config,
 gateway/            robot-side ZMQ gateway (ROS topics ⇆ network protocol)
 robots/             launch files (respawn + run_id), preflight, scan watchdog, camera unit
 dashboard_qt/       Operations Center (ui/, transport/, state/, inference/, sim/)
-firmware/           current sketches (v3 · v5 · v2)   arduino/  legacy rollbacks
+firmware/           current sketches (robot1_v3 · robot2_v5 · robot3_v2)
+arduino/            flash-back rollbacks (robot1_controller · robot2_controller_v4 · robot3_controller)
 navigation/         ROS 2 nodes: bridges, odometry, goto, explorer
 mapping/            slam_toolbox launch + tuned config
 config/             every host, port and calibration constant in one place
 systemd/            service units + udev serial rules + installer
-tools/              soak_test · baseline_probe · collect_logs · model probes
+tools/              soak_test · baseline_probe · collect_logs · model probes · NoMachine profiles
 tests/              91 tests — run on Windows and the Pis
-docs/               protocol spec · demo runbook · bench checklist · baselines
+docs/               protocol spec · demo runbook · wiring manuals · bench checklist · design notes
 ```
 
 ## Known limitations (honest engineering)

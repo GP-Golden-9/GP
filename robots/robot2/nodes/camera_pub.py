@@ -8,7 +8,7 @@ control). Replaces classification/tcp_rasp*.py.
 Publishes BOTH:
   :5560  framed protocol — multipart [envelope(video.meta), jpeg bytes]
          (capture timestamp + seq → the Qt dashboard shows true frame age)
-  :5555  legacy raw JPEG (NiceGUI dashboard) while migration is in progress;
+  :5555  legacy raw JPEG (tmux-fallback streamer compatibility);
          disable with camera.legacy_port: 0 in config/robot2.yaml
 """
 

@@ -2,7 +2,7 @@
 
 Run this ENTIRE checklist on the bench (wheels off the ground, pump in a
 bucket) before installing v5 on the robot. Rollback at any point = reflash
-`arduino/robot2_controller/robot2 controller v4 .ino` (kept untouched).
+`arduino/robot2_controller_v4/robot2_controller_v4.ino` (kept untouched).
 
 ## 0. Power gate — MANDATORY before wiring the pump/servo
 

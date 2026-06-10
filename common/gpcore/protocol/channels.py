@@ -13,8 +13,7 @@ PORT_HEALTH       = 5559   # PUB: health @ 1 Hz
 PORT_VIDEO        = 5560   # PUB multipart: [envelope(video.meta), jpeg bytes]
 
 # ── Other well-known ports ────────────────────────────────────────────────
-PORT_ROSBRIDGE = 9090      # legacy dashboard path (fallback during migration)
-PORT_DASHBOARD = 8080      # NiceGUI legacy dashboard
+PORT_ROSBRIDGE = 9090      # optional robot-side rosbridge (debug only)
 
 # ── Message types ─────────────────────────────────────────────────────────
 TELE_FULL  = 'tele.full'

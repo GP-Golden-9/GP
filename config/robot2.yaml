@@ -26,8 +26,8 @@ camera:
   height: 480
   fps: 15                # Pi 3B+ headroom; 30 was saturating one core
   jpeg_quality: 35
-  legacy_port: 5555      # also publish raw JPEG for the NiceGUI dashboard
-                         # during migration; set to 0 to disable
+  legacy_port: 5555      # raw-JPEG channel kept for the tmux fallback
+                         # streamer compatibility; set to 0 to disable
 
 drive:
   wheel_diameter_m: 0.065   # ⚠ measure on the real robot before trusting odom

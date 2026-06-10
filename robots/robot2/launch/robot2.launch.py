@@ -46,8 +46,9 @@ def generate_launch_description():
         rosbridge_launch = '/dev/null'
 
     return LaunchDescription([
-        DeclareLaunchArgument('enable_rosbridge', default_value='true',
-                              description='legacy NiceGUI fallback path'),
+        DeclareLaunchArgument('enable_rosbridge', default_value='false',
+                              description='optional rosbridge for debugging '
+                                          '(the console uses the ZMQ gateway)'),
 
         SetEnvironmentVariable('ROS_DOMAIN_ID', ROS_DOMAIN_ID),
         SetEnvironmentVariable('ROS_LOCALHOST_ONLY', '1'),

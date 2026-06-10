@@ -9,7 +9,7 @@ and these channels. Implemented in `common/gpcore/protocol/`; robot side in
 
 | Port | Channel | Pattern | Content | Rate |
 |---|---|---|---|---|
-| 5555 | video-legacy | PUB | raw JPEG (NiceGUI fallback) | ≤30 fps, retired after Qt parity |
+| 5555 | video-legacy | PUB | raw JPEG (tmux-fallback streamer) | ≤30 fps |
 | 5556 | telemetry | PUB | `tele.full`, `tele.scan` | 20 Hz / 5 Hz |
 | 5557 | map | PUB | `map.grid` | ≤1 Hz |
 | 5558 | command | ROUTER↔DEALER | `cmd.*` in, `ack` out | on demand |
