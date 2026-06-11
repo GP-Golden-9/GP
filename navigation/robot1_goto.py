@@ -206,11 +206,14 @@ class Robot1GoTo(Node):
         self_hit = ((x > -(self.rear_extent + 0.03))
                     & (x < self.fwd_extent + 0.03)
                     & (np.abs(y) < self.half_width + 0.03))
-        # measured left-side fixture (cable/bracket): tracked at a constant
-        # body position (x=-0.02..+0.12, y=+0.21..0.24) through every pivot
-        # and translation on 2026-06-11 — definitively attached, but it
-        # shifts between boots so the per-beam mask can miss it
-        self_hit |= ((x > -0.12) & (x < 0.15) & (y > 0.16) & (y < 0.27))
+        # measured left-side fixture (cable/bracket along the left flank):
+        # tracked at constant body positions spanning x=-0.12..+0.20,
+        # y=+0.21..0.24 through every pivot and translation on 2026-06-11 —
+        # definitively attached, but it shifts between boots so the
+        # per-beam mask can miss it. Pocket covers the observed envelope;
+        # TEAM ACTION: tuck that cable out of the scan plane and shrink
+        # this pocket away.
+        self_hit |= ((x > -0.15) & (x < 0.23) & (y > 0.15) & (y < 0.28))
         x, y = x[~self_hit], y[~self_hit]
 
         in_corridor = (np.abs(y) < self.corridor_half) & (x > 0.0)
