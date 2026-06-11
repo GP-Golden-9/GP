@@ -43,7 +43,12 @@ footprint:
 drive:
   # Measured 2026-06-11 — the old 0.065 under-read every distance by 24%.
   wheel_diameter_m: 0.085
-  ticks_per_rev: 330
+  # 25GA370 spec sheet (docs/design_notes/ wheel-odometry fusion doc):
+  # 12 PPR × 34:1 gearbox = 408 counts/wheel-rev at 1× decoding — exactly
+  # what the firmware ISR counts (RISING on channel A only). The old 330
+  # was an empirical pair with the wrong 65 mm wheel; together they nearly
+  # cancelled, separately each is wrong.
+  ticks_per_rev: 408
   # Wheel CONTACT-CENTER spacing, estimated: 0.20 m chassis + one wheel
   # width. CALIBRATE: command a 360° pivot; if the robot over-rotates,
   # the value is too small (raise it), under-rotates → lower it.
