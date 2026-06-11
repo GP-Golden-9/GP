@@ -111,10 +111,17 @@ class Robot2Bridge(Node):
                 self.arduino = serial.Serial(p, baud, timeout=1)
                 time.sleep(2)  # Arduino resets on serial open
 
-                # Drain startup messages
-                while self.arduino.in_waiting:
+                # Drain the boot banner — BOUNDED. v5 firmware streams D:/B:
+                # telemetry at 50 Hz, so a bare `while in_waiting:` NEVER
+                # goes quiet: field failure 2026-06-11, the constructor
+                # looped here forever (8,900+ journald lines in minutes),
+                # the reader thread never started and /encoders stayed
+                # silent. Telemetry lines are not worth logging anyway.
+                deadline = time.time() + 3.0
+                while time.time() < deadline and self.arduino.in_waiting:
                     line = self.arduino.readline().decode(errors='ignore').strip()
-                    self.get_logger().info(f'Arduino: {line}')
+                    if line and not line.startswith(('D:', 'B:')):
+                        self.get_logger().info(f'Arduino: {line}')
 
                 self.connected = True
                 self.get_logger().info(f'Connected to Arduino on {p} @ {baud}')
