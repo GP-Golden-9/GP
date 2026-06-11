@@ -72,8 +72,16 @@ class Robot2Odom(Node):
         self.prev_enc = None          # [FL, RL, FR, RR] — previous tick values
         self.last_enc_time = None
 
-        # IMU tracking
+        # IMU tracking. A dead/disconnected MPU6050 still produces
+        # /imu/data_raw messages — the firmware sends raw ZEROS — so
+        # staleness alone can't detect it. A live MPU has a noise floor
+        # (raw values always jitter); only a dead chip reads EXACTLY zero
+        # on all six axes. After a streak of all-zero messages we fall
+        # back to pure encoder heading instead of blending in 70% of
+        # nothing (which made every turn register at 30%).
         self.gyro_z = 0.0             # Latest gyro reading (rad/s)
+        self._imu_zero_streak = 0
+        self._imu_dead = False
 
         # Timer for publishing at 50 Hz
         self.create_timer(0.02, self._publish_odom)
@@ -89,6 +97,22 @@ class Robot2Odom(Node):
     def _imu_cb(self, msg: Imu):
         """Store latest gyroscope Z reading (already in rad/s from bridge)."""
         self.gyro_z = msg.angular_velocity.z
+        vals = (msg.angular_velocity.x, msg.angular_velocity.y,
+                msg.angular_velocity.z, msg.linear_acceleration.x,
+                msg.linear_acceleration.y, msg.linear_acceleration.z)
+        if all(abs(v) < 1e-9 for v in vals):
+            self._imu_zero_streak = min(self._imu_zero_streak + 1, 1000)
+        else:
+            self._imu_zero_streak = 0
+        dead = self._imu_zero_streak >= 25       # ~1 s of exact zeros
+        if dead != self._imu_dead:
+            self._imu_dead = dead
+            if dead:
+                self.get_logger().warn(
+                    'IMU reads all-zero (chip dead or unwired) — '
+                    'heading from ENCODERS ONLY until it recovers')
+            else:
+                self.get_logger().info('IMU alive — gyro blending restored')
 
     def _enc_cb(self, msg: Int32MultiArray):
         """Process encoder data: [Front-Left, Rear-Left, Front-Right, Rear-Right]."""
@@ -129,9 +153,13 @@ class Robot2Odom(Node):
             dt = 0.02  # fallback
 
         # ── Complementary filter: blend encoder heading with IMU gyro ──
-        d_theta_imu = self.gyro_z * dt
-        d_theta = (ENCODER_HEADING_WEIGHT * d_theta_enc +
-                   (1.0 - ENCODER_HEADING_WEIGHT) * d_theta_imu)
+        # (pure encoders while the IMU is dead — see _imu_cb)
+        if self._imu_dead:
+            d_theta = d_theta_enc
+        else:
+            d_theta_imu = self.gyro_z * dt
+            d_theta = (ENCODER_HEADING_WEIGHT * d_theta_enc +
+                       (1.0 - ENCODER_HEADING_WEIGHT) * d_theta_imu)
 
         # ── Update pose ──
         self.theta += d_theta
