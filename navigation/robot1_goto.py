@@ -195,8 +195,23 @@ class Robot1GoTo(Node):
         else:
             self._front_blocked = nearest < self.stop_ahead
 
-        d2 = x * x + y * y
-        self._rot_blocked = bool((d2 < self.rotate_clear ** 2).any())
+        # Rotation sweep, by actual geometry — NOT a naive full circle:
+        #   * the front corners only reach hypot(0.10, 0.15) = 0.18 m, so
+        #     anything in the front half-plane beyond 0.21 m can never be
+        #     touched by rotating (a wall ahead must not veto rotation);
+        #   * the REAR corners sweep 0.335 m — points in the rear half
+        #     inside rotate_clear genuinely block.
+        d = np.hypot(x, y)
+        near_any = d < (self.corridor_half)           # grazes the body side
+        rear_swing = (x < 0.05) & (d < self.rotate_clear)
+        self._rot_blocked = bool(near_any.any() or rear_swing.any())
+
+        # remember the closest return for actionable BLOCKED logs
+        if d.size:
+            i = int(np.argmin(d))
+            self._nearest = (float(x[i]), float(y[i]), float(d[i]))
+        else:
+            self._nearest = None
 
     def _manual_cb(self, _msg: Twist):
         if self.goal is not None:
@@ -248,8 +263,11 @@ class Robot1GoTo(Node):
             now = self.get_clock().now().nanoseconds / 1e9
             if self._blocked_since is None:
                 self._blocked_since = now
+                near = getattr(self, '_nearest', None)
+                where = (f' nearest x={near[0]:+.2f} y={near[1]:+.2f} '
+                         f'd={near[2]:.2f}m' if near else '')
                 self._announce(f'GOTO: path blocked ({blocked_reason}) — '
-                               'holding')
+                               f'holding{where}')
             elif now - self._blocked_since > self.blocked_abort_s:
                 self._announce('GOTO: blocked too long — goal aborted')
                 self._cancel('blocked')

@@ -59,5 +59,6 @@ goto:
   stop_ahead_m: 0.35         # forward extent 0.10 + 0.25 braking margin
   resume_ahead_m: 0.45       # hysteresis so it doesn't stutter at the edge
   corridor_half_m: 0.21      # half width 0.15 + 0.06 lateral margin
-  rotate_clear_m: 0.38       # circumscribed 0.335 + margin: rear swing room
+  rotate_clear_m: 0.36       # rear-corner sweep 0.335 + margin (rear half
+                             # only — the front never reaches past 0.18)
   blocked_abort_s: 6.0       # obstacle persists this long -> goal aborted
