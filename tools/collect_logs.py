@@ -40,7 +40,7 @@ def run(cmd: list[str], timeout: int = 60) -> tuple[int, str]:
 def collect_robot(host: str, user: str, since: str, dest: str, manifest: list):
     target = f'{user}@{host}'
     os.makedirs(dest, exist_ok=True)
-    print(f'── {host}')
+    print(f'-- {host}')      # ASCII only: Windows consoles are cp1252
 
     rc, run_id = run(['ssh', *SSH_OPTS, target, 'ls -t ~/gp_logs | head -1'])
     run_id = run_id.strip().splitlines()[0] if rc == 0 and run_id.strip() else ''
@@ -82,7 +82,7 @@ def collect_laptop(dest: str, manifest: list):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('hosts', nargs='+', help='robot hostnames (robot.local …)')
-    ap.add_argument('--user', default='pi')
+    ap.add_argument('--user', default='muc')   # the fleet's actual user
     ap.add_argument('--since', default='2 hours ago')
     ap.add_argument('--out', default=os.path.join(
         os.path.dirname(os.path.abspath(__file__)), '..', 'incidents'))

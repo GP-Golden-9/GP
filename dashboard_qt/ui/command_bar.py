@@ -19,13 +19,13 @@ from ui.theme import chip
 
 
 def _dot_icon(color: str) -> QIcon:
-    pm = QPixmap(12, 12)
+    pm = QPixmap(14, 14)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
     p.setPen(Qt.NoPen)
     p.setBrush(QColor(color))
-    p.drawEllipse(2, 2, 8, 8)
+    p.drawEllipse(2, 2, 10, 10)
     p.end()
     return QIcon(pm)
 
@@ -48,14 +48,17 @@ class CommandBar(QToolBar):
 
         self._pills: dict[str, QPushButton] = {}
         self._link: dict[str, bool | None] = {}
+        self._tips: dict[str, str] = {}
         for prof in robots:
             pill = QPushButton(prof.name)
             pill.setObjectName('robotPill')
             pill.setIcon(_dot_icon(theme.MUTED))
             pill.setCheckable(True)
             pill.setFocusPolicy(Qt.NoFocus)
-            pill.setToolTip(f'{prof.id} · {prof.host} · '
-                            f'{"ESP32/HTTP" if prof.is_esp32 else "ROS gateway"}')
+            self._tips[prof.id] = (
+                f'{prof.id} · {prof.host} · '
+                f'{"ESP32/HTTP" if prof.is_esp32 else "ROS gateway"}')
+            pill.setToolTip(self._tips[prof.id] + '\nstate: connecting…')
             pill.clicked.connect(lambda _=False, rid=prof.id: self._pick(rid))
             self.addWidget(pill)
             self._pills[prof.id] = pill
@@ -118,6 +121,12 @@ class CommandBar(QToolBar):
             return
         color = theme.MUTED if up is None else (theme.GOOD if up else theme.BAD)
         pill.setIcon(_dot_icon(color))
+        # Readiness is the 1 Hz command-channel heartbeat, not ICMP: green
+        # means the robot's software answers commands, not just its NIC.
+        state = ('connecting…' if up is None else
+                 'READY — commands acknowledged' if up else
+                 'OFFLINE — no response (stack down or unreachable)')
+        pill.setToolTip(self._tips.get(robot_id, robot_id) + f'\nstate: {state}')
 
     def set_active_link_chip(self, up: bool) -> None:
         self.link_chip.setText('●  LINK UP' if up else '●  LINK DOWN')
