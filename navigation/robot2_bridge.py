@@ -67,6 +67,13 @@ class Robot2Bridge(Node):
         self.last_twist_time = 0.0      # monotonic time of last accepted Twist
         self.estop = False
         self._serial_lock = threading.Lock()
+        # Stall detector: motion commanded but wheels not turning (carpet
+        # pivot friction, blocked chassis, weak under-voltage battery).
+        # Field case 2026-06-11: pivot at PWM 215, estop clear, encoders
+        # frozen — silently grinding motors. Announce it instead.
+        self._stall_enc = None          # encoder snapshot at motion start
+        self._stall_since = None
+        self._stall_announced = False
 
         # ── Connect to Arduino ──
         self._connect_arduino()
@@ -85,6 +92,7 @@ class Robot2Bridge(Node):
         self.status_pub = self.create_publisher(String, '/motor_status', 10)
         self.encoder_pub = self.create_publisher(Int32MultiArray, '/encoders', 10)
         self.imu_pub = self.create_publisher(Imu, '/imu/data_raw', 10)
+        self.log_pub = self.create_publisher(String, '/robot_log', 10)
 
         # ── Timers ──
         self.create_timer(0.1, self._check_manual_timeout)
@@ -226,6 +234,7 @@ class Robot2Bridge(Node):
 
             ts   = int(parts[0])
             encs = [int(parts[i]) for i in range(1, 5)]
+            self._check_stall(encs)
             ax, ay, az = int(parts[5]), int(parts[6]), int(parts[7])
             gx, gy, gz = int(parts[8]), int(parts[9]), int(parts[10])
 
@@ -264,6 +273,31 @@ class Robot2Bridge(Node):
     # ═══════════════════════════════════════
     # MOVEMENT COMMANDS
     # ═══════════════════════════════════════
+    def _check_stall(self, encs):
+        """Motion commanded but encoders frozen → tell the operator."""
+        if self.last_motion == 'S' or self.estop:
+            self._stall_enc = None
+            self._stall_announced = False
+            return
+        now = time.monotonic()
+        if self._stall_enc is None:
+            self._stall_enc = list(encs)
+            self._stall_since = now
+            return
+        moved = sum(abs(e - p) for e, p in zip(encs, self._stall_enc))
+        if moved >= 5:
+            self._stall_enc = list(encs)
+            self._stall_since = now
+            self._stall_announced = False
+            return
+        if now - self._stall_since > 1.5 and not self._stall_announced:
+            self._stall_announced = True
+            line = (f'MOTOR STALL: cmd={self.last_motion} PWM='
+                    f'{self.pwm_speed} but wheels not turning — blocked, '
+                    'carpet pivot friction, or weak battery (undervoltage?)')
+            self.get_logger().warn(line)
+            self.log_pub.publish(String(data=line))
+
     def _twist_to_cmd(self, msg: Twist) -> str:
         linear = msg.linear.x
         angular = msg.angular.z
