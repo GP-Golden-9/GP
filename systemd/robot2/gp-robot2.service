@@ -8,6 +8,12 @@ Type=simple
 User=pi
 Environment=GP_DIR=/home/pi/GP
 WorkingDirectory=/home/pi/GP
+# Brownout crash-loops leave stale FastDDS shared-memory segments in
+# /dev/shm; with ROS_LOCALHOST_ONLY=1 they silently eat every message
+# (discovery matches, data never delivered — field case 2026-06-11:
+# bridge executor idle while 695 gateway commands vanished). Purge them
+# before every start; nothing else may own them at this point.
+ExecStartPre=/bin/sh -c 'rm -f /dev/shm/fastrtps_* /dev/shm/fast_datasharing* /dev/shm/sem.fastrtps_* 2>/dev/null; true'
 ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && exec ros2 launch /home/pi/GP/robots/robot2/launch/robot2.launch.py'
 Restart=always
 RestartSec=3
