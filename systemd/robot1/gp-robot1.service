@@ -11,6 +11,9 @@ WorkingDirectory=/home/pi/GP
 # Purge stale FastDDS shared-memory segments before every start — after a
 # crash they silently eat all messages (see gp-robot2.service).
 ExecStartPre=/bin/sh -c 'rm -f /dev/shm/fastrtps_* /dev/shm/fast_datasharing* /dev/shm/sem.fastrtps_* 2>/dev/null; true'
+# Evict the lidar idle holder so the driver can claim the serial port
+# ('+' = run as root; one-directional — see gp-lidar-idle.service)
+ExecStartPre=+/bin/systemctl stop gp-lidar-idle.service
 ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && if [ -f "$HOME/ros2_ws/install/setup.bash" ]; then source "$HOME/ros2_ws/install/setup.bash"; fi; exec ros2 launch /home/pi/GP/robots/robot1/launch/robot1.launch.py'
 Restart=always
 RestartSec=3

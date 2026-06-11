@@ -1,12 +1,11 @@
 [Unit]
 Description=GP LiDAR idle hold (motor off while the robot stack is down)
 ConditionPathExists=/dev/rplidar
-# Mutually exclusive with the stack: starting gp-robot1 stops this holder
-# first (freeing the serial port for the real driver); gp-robot1's
-# ExecStopPost starts it again. Net effect: the lidar only spins while
-# the robot is actually mapping.
-Conflicts=gp-robot1.service
-Before=gp-robot1.service
+# ONE-DIRECTIONAL hand-off (a Conflicts= here is bidirectional and let a
+# late-starting holder KILL a freshly restarted stack — observed live):
+# gp-robot1's ExecStartPre stops this holder before claiming the port;
+# its ExecStopPost starts it again. If this holder ever starts while the
+# stack runs, the script sees the port busy and exits 0 harmlessly.
 
 [Service]
 Type=simple
