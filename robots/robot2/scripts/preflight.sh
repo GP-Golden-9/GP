@@ -19,11 +19,21 @@ FREE_MB=$(df -Pm / | awk 'NR==2 {print $4}')
 if [ "${FREE_MB:-0}" -ge 300 ]; then ok "disk ${FREE_MB} MB free"; else bad "disk only ${FREE_MB} MB free (<300)"; fi
 
 # 4. Power health (Pi 3B+ is the brown-out-prone one — block on live undervoltage)
-THROTTLED=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)
+# Boot inrush (USB enumeration + WiFi radio) can trip the undervoltage bit
+# for an instant right when this service runs; sample up to 3x over 10 s
+# and block only if the sag PERSISTS. Field case 2026-06-11: capacitors
+# fixed the rail, but preflight kept failing on the boot blip.
 mkdir -p "$HOME/gp_logs"
-echo "$(date '+%F %T') preflight ${THROTTLED:-n/a}" >> "$HOME/gp_logs/throttled.log"
+for attempt in 1 2 3; do
+    THROTTLED=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)
+    echo "$(date '+%F %T') preflight try$attempt ${THROTTLED:-n/a}" >> "$HOME/gp_logs/throttled.log"
+    case "${THROTTLED:-}" in
+        *1|*3|*5|*7|*9|*b|*d|*f) [ "$attempt" -lt 3 ] && { say "⚠ undervoltage flag (try $attempt/3) — settling…"; sleep 5; } ;;
+        *) break ;;
+    esac
+done
 case "${THROTTLED:-}" in
-    *1|*3|*5|*7|*9|*b|*d|*f) bad "UNDERVOLTAGE NOW (get_throttled=${THROTTLED}) — fix power before driving" ;;
+    *1|*3|*5|*7|*9|*b|*d|*f) bad "UNDERVOLTAGE PERSISTS (get_throttled=${THROTTLED}) — fix power before driving" ;;
     "")                      say "⚠ vcgencmd unavailable (not a Pi?)" ;;
     *)                       ok "power flags ${THROTTLED}" ;;
 esac
