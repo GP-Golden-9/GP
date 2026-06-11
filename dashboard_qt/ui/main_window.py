@@ -301,6 +301,13 @@ class MainWindow(QMainWindow):
         for client in self.cmd.values():
             if client not in self.links.values():
                 client.start()
+        # host-level reachability → amber "ON NETWORK, stack stopped" pills
+        from transport.reachability import ReachabilityProber
+        targets = {p.id: (p.host, 80 if p.is_esp32 else 22)
+                   for p in self.app_cfg.robots}
+        self._prober = ReachabilityProber(targets, parent=self)
+        self._prober.reachableChanged.connect(self.command_bar.set_robot_net)
+        self._prober.start()
         self._log(f'operations center up — run {self.run_id}, '
                   f'active {self.active_id}')
 

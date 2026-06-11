@@ -48,6 +48,7 @@ class CommandBar(QToolBar):
 
         self._pills: dict[str, QPushButton] = {}
         self._link: dict[str, bool | None] = {}
+        self._net: dict[str, bool | None] = {}
         self._tips: dict[str, str] = {}
         for prof in robots:
             pill = QPushButton(prof.name)
@@ -116,16 +117,32 @@ class CommandBar(QToolBar):
 
     def set_robot_link(self, robot_id: str, up: bool | None) -> None:
         self._link[robot_id] = up
+        self._render_pill(robot_id)
+
+    def set_robot_net(self, robot_id: str, reachable: bool) -> None:
+        """Host-level reachability from the background prober."""
+        self._net[robot_id] = reachable
+        self._render_pill(robot_id)
+
+    def _render_pill(self, robot_id: str) -> None:
         pill = self._pills.get(robot_id)
         if pill is None:
             return
-        color = theme.MUTED if up is None else (theme.GOOD if up else theme.BAD)
+        up = self._link.get(robot_id)
+        net = self._net.get(robot_id)
+        # Three truths, three colors. The heartbeat (1 Hz over the command
+        # channel) outranks the TCP probe: green proves the SOFTWARE obeys,
+        # amber proves only that the Pi is powered and on the network.
+        if up:
+            color, state = theme.GOOD, 'READY — commands acknowledged'
+        elif net:
+            color, state = theme.WARN, ('ON NETWORK — stack not running '
+                                        '(Diagnostics → RESTART STACK)')
+        elif net is False:
+            color, state = theme.BAD, 'UNREACHABLE — powered off or not on this network'
+        else:
+            color, state = theme.MUTED, 'connecting…'
         pill.setIcon(_dot_icon(color))
-        # Readiness is the 1 Hz command-channel heartbeat, not ICMP: green
-        # means the robot's software answers commands, not just its NIC.
-        state = ('connecting…' if up is None else
-                 'READY — commands acknowledged' if up else
-                 'OFFLINE — no response (stack down or unreachable)')
         pill.setToolTip(self._tips.get(robot_id, robot_id) + f'\nstate: {state}')
 
     def set_active_link_chip(self, up: bool) -> None:
