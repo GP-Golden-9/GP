@@ -47,6 +47,18 @@ KP_ANGLE = 1.2
 KP_DISTANCE = 0.5
 CONTROL_HZ = 20.0
 
+# Self-occlusion learning. Field data 2026-06-11 (tools scan probe): a
+# fixture protrudes 0.21-0.24 m at the front-left — present in EVERY scan
+# at a constant body-frame position. Anything persistently closer than
+# SELF_RADIUS_BOUND is bolted to the robot, and the lidar can never see
+# past it anyway, so those beams are masked instead of hand-tuning the
+# footprint rectangle forever.
+SELF_LEARN_SCANS = 15          # ~2 s at boot
+SELF_RADIUS_BOUND = 0.32       # attached fixtures only; walls are farther
+SELF_SLACK_M = 0.05            # masked beam ignores returns near profile
+SELF_UNMASK_DELTA = 0.20       # return moved this far past profile…
+SELF_UNMASK_SCANS = 20         # …this many scans → it was environment
+
 STATE_IDLE = 'IDLE'
 STATE_ROTATING = 'ROTATING'
 STATE_DRIVING = 'DRIVING'
@@ -92,6 +104,10 @@ class Robot1GoTo(Node):
         self._rot_blocked = False
         self._blocked_since = None
         self._last_status = ''
+        self._learn_left = SELF_LEARN_SCANS
+        self._profile = None          # per-beam min range while learning
+        self._self_mask = None        # bool per beam: attached fixture
+        self._unmask_count = None
 
         self.create_timer(1.0 / CONTROL_HZ, self._navigate)
         self._status(STATE_IDLE)
@@ -128,17 +144,44 @@ class Robot1GoTo(Node):
         if n == 0:
             return
         r = np.asarray(msg.ranges, dtype=np.float32)
+
+        # ── learn / apply the self-occlusion mask ──
+        if self._profile is None or len(self._profile) != n:
+            self._profile = np.full(n, np.inf, dtype=np.float32)
+            self._learn_left = SELF_LEARN_SCANS
+            self._self_mask = None
+        finite = np.where(np.isfinite(r) & (r > msg.range_min), r, np.inf)
+        if self._learn_left > 0:
+            np.minimum(self._profile, finite, out=self._profile)
+            self._learn_left -= 1
+            if self._learn_left == 0:
+                self._self_mask = self._profile < SELF_RADIUS_BOUND
+                self._unmask_count = np.zeros(n, dtype=np.int32)
+                self.get_logger().info(
+                    f'self-occlusion mask: {int(self._self_mask.sum())} '
+                    f'beams (attached fixtures < {SELF_RADIUS_BOUND} m)')
+            return                       # guard arms after learning
+
+        masked = self._self_mask
+        # a masked beam whose return moved well past the learned distance
+        # was environment after all (robot drove away from it) → unmask
+        moved = masked & (finite > self._profile + SELF_UNMASK_DELTA)
+        self._unmask_count[moved] += 1
+        self._unmask_count[masked & ~moved] = 0
+        release = self._unmask_count >= SELF_UNMASK_SCANS
+        if release.any():
+            self._self_mask = masked = masked & ~release
+            self._unmask_count[release] = 0
+
         ang = (msg.angle_min + self.laser_yaw
                + np.arange(n, dtype=np.float32) * msg.angle_increment)
         valid = np.isfinite(r) & (r > max(0.05, msg.range_min)) & (r < 8.0)
+        valid &= ~(masked & (r < self._profile + SELF_SLACK_M))
         x = r[valid] * np.cos(ang[valid])      # +x = robot forward
         y = r[valid] * np.sin(ang[valid])
 
-        # The lidar sits at the FRONT of a 40 cm body: it sees its own
-        # chassis (rear deck, posts, cables at 0.15-0.30 m). Returns inside
-        # the footprint envelope (+3 cm slack) are the robot itself — they
-        # must not count as obstacles or every rotation reads "blocked"
-        # (exactly the field failure this comment is from).
+        # belt-and-braces: returns inside the body envelope are never
+        # obstacles either (chassis itself)
         self_hit = ((x > -(self.rear_extent + 0.03))
                     & (x < self.fwd_extent + 0.03)
                     & (np.abs(y) < self.half_width + 0.03))

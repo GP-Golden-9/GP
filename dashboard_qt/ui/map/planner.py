@@ -55,6 +55,15 @@ def build_costmap(grid: np.ndarray, res: float,
     from walls up to its CIRCUMSCRIBED radius without hard-blocking
     doorways the inscribed body fits through."""
     occ = grid > OCC_THRESHOLD
+    # Despeckle FOR PLANNING ONLY: an isolated occupied cell with zero
+    # occupied neighbours is scan-matching noise — any real object at
+    # 2.5 cm resolution spans several cells. Without this, inflation
+    # turns every speck into an 8-cell blob and free rooms read NO PATH.
+    p = np.pad(occ, 1, constant_values=False)
+    neighbours = (p[:-2, 1:-1].astype(np.int8) + p[2:, 1:-1] + p[1:-1, :-2]
+                  + p[1:-1, 2:] + p[:-2, :-2] + p[:-2, 2:] + p[2:, :-2]
+                  + p[2:, 2:])
+    occ = occ & (neighbours > 0)
     unknown = grid < 0
     radius = (ROBOT_RADIUS_M + HARD_MARGIN_M
               if hard_radius_m is None else hard_radius_m)
