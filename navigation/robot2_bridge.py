@@ -49,6 +49,10 @@ class Robot2Bridge(Node):
         # Torque floor for skid-steer pivots (config drive.turn_pwm) —
         # four wheels scrubbing sideways need more than driving PWM.
         self.declare_parameter('turn_pwm', 215)
+        # Minimum PWM that actually moves the chassis (config drive.min_pwm).
+        # Below ~150 the motors hum without breaking static friction —
+        # the old 80..255 mapping made the console's default speed a no-op.
+        self.declare_parameter('min_pwm', 150)
         # Keepalive: firmware stops motors after WATCHDOG_MS (1 s) of serial
         # silence, so a non-stop command must be re-sent periodically — but
         # ONLY while fresh Twists keep arriving (deadman), otherwise a dead

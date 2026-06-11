@@ -58,6 +58,11 @@ drive:
   # Skid-steer pivots scrub four wheels sideways — they need MORE torque
   # than driving. Below ~180 PWM the motors stall-judder ("suffering").
   turn_pwm: 215
+  # Verified 2026-06-11 (direct-serial test): PWM 255 moves hard, but the
+  # old 80..255 mapping put the console's DEFAULT speed at ~PWM 132 —
+  # below static friction, robot didn't move at all. Drive PWM now maps
+  # min_pwm..255 so every slider position actually produces motion.
+  min_pwm: 150
   deadman_timeout_s: 0.8
   keepalive_period_s: 0.3
 
