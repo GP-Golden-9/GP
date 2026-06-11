@@ -101,6 +101,7 @@ class Robot1GoTo(Node):
         self.exploring = False
         self.state = STATE_IDLE
         self._front_blocked = False   # with hysteresis
+        self._rear_blocked = False
         self._rot_blocked = False
         self._blocked_since = None
         self._last_status = ''
@@ -195,6 +196,16 @@ class Robot1GoTo(Node):
         else:
             self._front_blocked = nearest < self.stop_ahead
 
+        # reverse corridor: distance from the REAR EDGE to the nearest
+        # return behind (body extends rear_extent behind base_link)
+        in_back = (np.abs(y) < self.corridor_half) & (x < 0.0)
+        behind = -x[in_back] - self.rear_extent
+        nearest_b = float(behind.min()) if behind.size else 99.0
+        if self._rear_blocked:
+            self._rear_blocked = nearest_b < 0.25
+        else:
+            self._rear_blocked = nearest_b < 0.15
+
         # Rotation sweep, by actual geometry — NOT a naive full circle:
         #   * the front corners only reach hypot(0.10, 0.15) = 0.18 m, so
         #     anything in the front half-plane beyond 0.21 m can never be
@@ -251,7 +262,39 @@ class Robot1GoTo(Node):
         angle_err = math.atan2(math.sin(angle_err), math.cos(angle_err))
         rotating = abs(angle_err) > ANGLE_TOLERANCE
 
-        # ── collision guard (the part robot2 doesn't have) ──
+        # ── collision guard + tight-space maneuvers ──
+        # In a corridor narrower than the pivot circle the robot must NOT
+        # spin in place (rear corner sweeps 0.335 m). Instead:
+        #   goal mostly BEHIND  → REVERSE toward it (lidar covers 360°,
+        #                          the rear corridor is guarded too)
+        #   goal to a side      → ARC TURN: creep forward while turning;
+        #                          the rear tracks inside the front path
+        goal_behind = abs(angle_err) > 2.6        # within ~31° of dead aft
+        if rotating and self._rot_blocked:
+            cmd = Twist()
+            if goal_behind and not self._rear_blocked:
+                self._blocked_since = None
+                self.state = STATE_DRIVING
+                back_err = math.atan2(math.sin(angle_err - math.pi),
+                                      math.cos(angle_err - math.pi))
+                cmd.linear.x = -min(self.max_lin, KP_DISTANCE * distance)
+                cmd.angular.z = max(-self.max_ang * 0.5,
+                                    min(self.max_ang * 0.5,
+                                        KP_ANGLE * 0.5 * back_err))
+                self.cmd_pub.publish(cmd)
+                self._status(f'REVERSING:{distance:.2f}m')
+                return
+            if not goal_behind and not self._front_blocked:
+                self._blocked_since = None
+                self.state = STATE_ROTATING
+                cmd.linear.x = 0.06
+                cmd.angular.z = max(-self.max_ang * 0.8,
+                                    min(self.max_ang * 0.8,
+                                        KP_ANGLE * angle_err))
+                self.cmd_pub.publish(cmd)
+                self._status(f'ROTATING:{self.goal[0]:.2f},{self.goal[1]:.2f}')
+                return
+
         blocked_reason = None
         if rotating and self._rot_blocked:
             blocked_reason = 'ROTATE'
