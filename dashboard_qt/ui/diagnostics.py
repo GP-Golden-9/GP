@@ -104,7 +104,9 @@ class DiagnosticsPanel(QWidget):
         if prof is None:
             return
         host = prof.host
-        user_host = f'pi@{host}'
+        # SSH user comes from the robot's config (the fleet runs as 'muc',
+        # not the Raspberry Pi OS default 'pi')
+        user_host = f'{getattr(prof, "user", "muc")}@{host}'
 
         def btn(text, tip, fn, danger=False):
             b = QPushButton(text)
@@ -138,6 +140,14 @@ class DiagnosticsPanel(QWidget):
                     f'Restart the ROS stack on {host}?',
                     SSH + [user_host, f'sudo systemctl restart {unit} && '
                                       f'echo RESTARTED {unit}']))
+            btn('STOP STACK', 'put the robot fully idle (on robot1 the '
+                              'lidar motor stops too); START = RESTART STACK',
+                lambda: self._confirm_run(
+                    f'Stop the robot software on {host}?\n\n'
+                    'The robot goes idle (no telemetry, no control, lidar '
+                    'motor off) until you press RESTART STACK.',
+                    SSH + [user_host, f'sudo systemctl stop {unit} && '
+                                      f'echo STOPPED {unit}']))
             if rid == 'robot2':
                 btn('RESTART CAMERA', 'restart gp-camera only (video path)',
                     lambda: self._run(SSH + [user_host,
@@ -153,6 +163,16 @@ class DiagnosticsPanel(QWidget):
                     'Only after RESTART STACK failed. The robot will be gone '
                     'for ~45 seconds.',
                     SSH + [user_host, 'sudo reboot']), danger=True)
+            btn('SHUTDOWN', 'clean power-off (e.g. before charging) — '
+                            'stack stops first, then the Pi halts',
+                lambda: self._confirm_run(
+                    f'SHUT DOWN the robot at {host}?\n\n'
+                    'The Pi powers off cleanly (safe for the SD card). '
+                    'Switch it back on physically when needed.',
+                    SSH + [user_host,
+                           f'sudo systemctl stop {unit} 2>/dev/null; '
+                           'sudo shutdown -h now "shutdown from console"']),
+                danger=True)
         self.actions_row.addStretch(1)
 
     def _confirm_run(self, question: str, cmd: list[str]) -> None:

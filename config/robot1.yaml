@@ -4,6 +4,7 @@ robot:
   name: Alpha
   host: robot.local
   kind: ros            # ros | esp32
+  user: muc            # SSH user (console diagnostics / shutdown)
 
 ros:
   domain_id: 11

@@ -4,6 +4,7 @@ robot:
   name: Beta
   host: robot2.local
   kind: ros
+  user: muc            # SSH user (console diagnostics / shutdown)
 
 ros:
   domain_id: 12

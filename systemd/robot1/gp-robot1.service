@@ -17,6 +17,9 @@ RestartSec=3
 KillMode=mixed
 TimeoutStopSec=10
 MemoryMax=2500M
+# When the stack stops, hand the lidar back to the idle holder so the
+# motor stops spinning ('+' = run as root regardless of User=)
+ExecStopPost=+/bin/systemctl --no-block start gp-lidar-idle.service
 
 [Install]
 WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+[Unit]
+Description=GP LiDAR idle hold (motor off while the robot stack is down)
+ConditionPathExists=/dev/rplidar
+# Mutually exclusive with the stack: starting gp-robot1 stops this holder
+# first (freeing the serial port for the real driver); gp-robot1's
+# ExecStopPost starts it again. Net effect: the lidar only spins while
+# the robot is actually mapping.
+Conflicts=gp-robot1.service
+Before=gp-robot1.service
+
+[Service]
+Type=simple
+User=pi
+ExecStart=/usr/bin/python3 /home/pi/GP/tools/lidar_idle.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

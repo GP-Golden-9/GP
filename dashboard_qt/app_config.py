@@ -18,6 +18,7 @@ class RobotProfile:
     name: str
     host: str
     kind: str                      # 'ros' | 'esp32'
+    user: str = 'muc'              # SSH user for diagnostics actions
     zmq: Dict[str, int] = field(default_factory=dict)
     legacy_video_port: int = 0
     http: Dict = field(default_factory=dict)
@@ -87,6 +88,7 @@ def load_app_config(fleet_path: str | None = None) -> AppConfig:
             name=get_path(rc, 'robot.name'),
             host=get_path(rc, 'robot.host'),
             kind=get_path(rc, 'robot.kind', 'ros'),
+            user=get_path(rc, 'robot.user', 'muc'),
             zmq=rc.get('zmq', {}),
             legacy_video_port=get_path(rc, 'camera.legacy_port', 0),
             http=rc.get('http', {}),
