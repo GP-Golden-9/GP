@@ -17,6 +17,11 @@ dashboard:
   # detections); yolov8n-fire.pt (dual-head, also COCO objects) scored
   # 13-20% with noise — selectable in the toolbar when COCO classes matter.
   default_model: fire.pt
-  # Alarm threshold matched to the measured model confidence above; the
-  # 3-hits-in-2s debounce in the alert engine suppresses single-frame noise.
-  fire_conf_min: 0.25
+  # Operator decision 2026-06-11: night-room testing produced false alarms
+  # at 26-39%, so the alarm gate was raised to 0.80 on request. BE AWARE:
+  # fire.pt's measured confidence on REAL fire photos is 28-37% — at 0.80
+  # the audible alarm will essentially never trigger with this model; the
+  # detections table still lists everything the model sees, and F9 drills
+  # the alarm UX. The real fix for the 26-39% overlap between real fire
+  # and false positives is a better-trained model, not a threshold.
+  fire_conf_min: 0.80
