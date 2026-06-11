@@ -46,6 +46,9 @@ class Robot2Bridge(Node):
         self.declare_parameter('baud_rate', 115200)
         self.declare_parameter('manual_timeout', 0.5)
         self.declare_parameter('max_linear_speed', 0.5)
+        # Torque floor for skid-steer pivots (config drive.turn_pwm) —
+        # four wheels scrubbing sideways need more than driving PWM.
+        self.declare_parameter('turn_pwm', 215)
         # Keepalive: firmware stops motors after WATCHDOG_MS (1 s) of serial
         # silence, so a non-stop command must be re-sent periodically — but
         # ONLY while fresh Twists keep arriving (deadman), otherwise a dead
@@ -268,18 +271,31 @@ class Robot2Bridge(Node):
         if abs(linear) < 0.05 and abs(angular) < 0.1:
             return 'S'
 
-        # Adjust PWM based on speed magnitude
+        # Drive-biased arbitration: while a forward command is active, a
+        # steering correction must DOMINATE (2x) before we drop to a pivot.
+        # The old `linear > angular` test flapped F→L→F mid-drive whenever
+        # the goto controller steered — that was the visible jerk.
+        if abs(linear) >= 0.05 and abs(angular) <= 2.0 * abs(linear):
+            cmd = 'F' if linear > 0 else 'B'
+        else:
+            cmd = 'L' if angular > 0 else 'R'
+
+        # PWM by maneuver — and updated for TURNS too (the old code only
+        # set PWM from linear speed, so pivots ran on stale, often tiny
+        # PWM: four skid-steering wheels at PWM~120 stall-judder and the
+        # motors groan). Pivots get the configured torque floor.
         max_lin = self.get_parameter('max_linear_speed').value
-        factor = min(abs(linear) / max_lin, 1.0) if max_lin > 0 else 1.0
-        new_pwm = int(80 + factor * 175)
-        if new_pwm != self.pwm_speed and abs(linear) > 0.05:
+        if cmd in ('F', 'B'):
+            factor = min(abs(linear) / max_lin, 1.0) if max_lin > 0 else 1.0
+            new_pwm = int(80 + factor * 175)
+        else:
+            turn_pwm = int(self.get_parameter('turn_pwm').value)
+            factor = min(abs(angular) / 1.0, 1.0)
+            new_pwm = max(turn_pwm, int(80 + factor * 175))
+        if abs(new_pwm - self.pwm_speed) >= 5:      # don't spam serial
             self.pwm_speed = new_pwm
             self._send(f'P{new_pwm}')
-
-        if abs(linear) > abs(angular):
-            return 'F' if linear > 0 else 'B'
-        else:
-            return 'L' if angular > 0 else 'R'
+        return cmd
 
     def _manual_cb(self, msg: Twist):
         if self.estop:

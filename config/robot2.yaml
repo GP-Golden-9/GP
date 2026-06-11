@@ -29,12 +29,30 @@ camera:
   legacy_port: 5555      # raw-JPEG channel kept for the tmux fallback
                          # streamer compatibility; set to 0 to disable
 
+# Measured chassis (team, 2026-06-11): 30 cm long x 20 cm wide.
+# (Reported "axle height 2.0-2.5 cm" must be chassis GROUND CLEARANCE —
+# an 85 mm wheel puts its axle at 42.5 mm by geometry. Only the rolling
+# diameter matters for odometry.)
+footprint:
+  length_m: 0.30
+  width_m: 0.20
+  forward_extent_m: 0.15   # body center → front edge (no onboard lidar)
+  rear_extent_m: 0.15
+  half_width_m: 0.10
+
 drive:
-  wheel_diameter_m: 0.065   # ⚠ measure on the real robot before trusting odom
+  # Measured 2026-06-11 — the old 0.065 under-read every distance by 24%.
+  wheel_diameter_m: 0.085
   ticks_per_rev: 330
-  wheel_base_m: 0.23
+  # Wheel CONTACT-CENTER spacing, estimated: 0.20 m chassis + one wheel
+  # width. CALIBRATE: command a 360° pivot; if the robot over-rotates,
+  # the value is too small (raise it), under-rotates → lower it.
+  wheel_base_m: 0.225
   encoder_heading_weight: 0.3
   max_linear_mps: 0.5
+  # Skid-steer pivots scrub four wheels sideways — they need MORE torque
+  # than driving. Below ~180 PWM the motors stall-judder ("suffering").
+  turn_pwm: 215
   deadman_timeout_s: 0.8
   keepalive_period_s: 0.3
 

@@ -12,15 +12,15 @@ Subscribes:
 Publishes:
   /odom          (nav_msgs/Odometry)          — robot pose in map frame
 
-╔══════════════════════════════════════════════════════════════╗
-║  CALIBRATION REQUIRED — Measure these from YOUR robot:      ║
-║    WHEEL_DIAMETER  = diameter of one wheel (meters)         ║
-║    TICKS_PER_REV   = encoder ticks for 1 full revolution    ║
-║    WHEEL_BASE      = left↔right wheel center distance (m)   ║
-╚══════════════════════════════════════════════════════════════╝
+Kinematics come from config/robot2.yaml `drive:` (single source of truth —
+measured 2026-06-11: 85 mm wheels, 0.225 m track). The constants below are
+only the last-resort fallback if the config cannot be read.
 """
 
 import math
+import os
+import sys
+
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
@@ -29,22 +29,31 @@ from sensor_msgs.msg import Imu
 from geometry_msgs.msg import TransformStamped
 import tf2_ros
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                '..', 'common'))
+from gpcore.config import get_path, load_config          # noqa: E402
 
-# ╔══════════════════════════════════════════════════════════════╗
-# ║                  ROBOT PHYSICAL CONSTANTS                    ║
-# ║         ⚠️  CHANGE THESE TO MATCH YOUR ROBOT  ⚠️             ║
-# ╚══════════════════════════════════════════════════════════════╝
+_CFG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         '..', 'config', 'robot2.yaml')
 
-WHEEL_DIAMETER = 0.065      # 65 mm wheels (measure yours!)
-TICKS_PER_REV  = 330        # Ticks per full wheel revolution (measure!)
-WHEEL_BASE     = 0.23       # Distance between left & right wheels (meters)
-
-# Derived
-METERS_PER_TICK = (math.pi * WHEEL_DIAMETER) / TICKS_PER_REV
-
-# Complementary filter weight for heading
-# 0.0 = pure IMU gyro, 1.0 = pure encoders
+# Fallbacks only — real values live in config/robot2.yaml
+WHEEL_DIAMETER = 0.085
+TICKS_PER_REV = 330
+WHEEL_BASE = 0.225
 ENCODER_HEADING_WEIGHT = 0.3
+
+try:
+    _cfg = load_config(_CFG_PATH)
+    WHEEL_DIAMETER = float(get_path(_cfg, 'drive.wheel_diameter_m',
+                                    WHEEL_DIAMETER))
+    TICKS_PER_REV = int(get_path(_cfg, 'drive.ticks_per_rev', TICKS_PER_REV))
+    WHEEL_BASE = float(get_path(_cfg, 'drive.wheel_base_m', WHEEL_BASE))
+    ENCODER_HEADING_WEIGHT = float(get_path(
+        _cfg, 'drive.encoder_heading_weight', ENCODER_HEADING_WEIGHT))
+except Exception:                       # config unreadable → fallbacks
+    pass
+
+METERS_PER_TICK = (math.pi * WHEEL_DIAMETER) / TICKS_PER_REV
 
 
 class Robot2Odom(Node):
