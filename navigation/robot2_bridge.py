@@ -323,13 +323,14 @@ class Robot2Bridge(Node):
         # PWM: four skid-steering wheels at PWM~120 stall-judder and the
         # motors groan). Pivots get the configured torque floor.
         max_lin = self.get_parameter('max_linear_speed').value
+        min_pwm = int(self.get_parameter('min_pwm').value)
         if cmd in ('F', 'B'):
             factor = min(abs(linear) / max_lin, 1.0) if max_lin > 0 else 1.0
-            new_pwm = int(80 + factor * 175)
+            new_pwm = int(min_pwm + factor * (255 - min_pwm))
         else:
             turn_pwm = int(self.get_parameter('turn_pwm').value)
             factor = min(abs(angular) / 1.0, 1.0)
-            new_pwm = max(turn_pwm, int(80 + factor * 175))
+            new_pwm = max(turn_pwm, int(min_pwm + factor * (255 - min_pwm)))
         if abs(new_pwm - self.pwm_speed) >= 5:      # don't spam serial
             self.pwm_speed = new_pwm
             self._send(f'P{new_pwm}')
