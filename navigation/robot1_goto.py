@@ -67,6 +67,9 @@ class Robot1GoTo(Node):
         self.rotate_clear = get_path(cfg, 'goto.rotate_clear_m', 0.38)
         self.blocked_abort_s = get_path(cfg, 'goto.blocked_abort_s', 6.0)
         self.laser_yaw = get_path(cfg, 'footprint.laser_yaw_rad', 0.0)
+        self.fwd_extent = get_path(cfg, 'footprint.forward_extent_m', 0.10)
+        self.rear_extent = get_path(cfg, 'footprint.rear_extent_m', 0.30)
+        self.half_width = get_path(cfg, 'footprint.half_width_m', 0.15)
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -130,6 +133,16 @@ class Robot1GoTo(Node):
         valid = np.isfinite(r) & (r > max(0.05, msg.range_min)) & (r < 8.0)
         x = r[valid] * np.cos(ang[valid])      # +x = robot forward
         y = r[valid] * np.sin(ang[valid])
+
+        # The lidar sits at the FRONT of a 40 cm body: it sees its own
+        # chassis (rear deck, posts, cables at 0.15-0.30 m). Returns inside
+        # the footprint envelope (+3 cm slack) are the robot itself — they
+        # must not count as obstacles or every rotation reads "blocked"
+        # (exactly the field failure this comment is from).
+        self_hit = ((x > -(self.rear_extent + 0.03))
+                    & (x < self.fwd_extent + 0.03)
+                    & (np.abs(y) < self.half_width + 0.03))
+        x, y = x[~self_hit], y[~self_hit]
 
         in_corridor = (np.abs(y) < self.corridor_half) & (x > 0.0)
         ahead = x[in_corridor]
