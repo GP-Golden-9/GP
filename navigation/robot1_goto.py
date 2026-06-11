@@ -54,8 +54,13 @@ CONTROL_HZ = 20.0
 # past it anyway, so those beams are masked instead of hand-tuning the
 # footprint rectangle forever.
 SELF_LEARN_SCANS = 15          # ~2 s at boot
-SELF_RADIUS_BOUND = 0.32       # attached fixtures only; walls are farther
-SELF_SLACK_M = 0.05            # masked beam ignores returns near profile
+SELF_RADIUS_BOUND = 0.28       # fixtures hug the body (measured: 0.21-0.24)
+SELF_BAND_M = 0.06             # masked beam ignores ONLY returns at the
+                               # fixture's constant distance — anything
+                               # closer than that counts as an obstacle
+SELF_MASK_MAX_FRAC = 0.25      # more masked than this = robot is parked
+                               # against environment, not seeing fixtures:
+                               # disable the mask rather than go half-blind
 SELF_UNMASK_DELTA = 0.20       # return moved this far past profile…
 SELF_UNMASK_SCANS = 20         # …this many scans → it was environment
 
@@ -158,9 +163,19 @@ class Robot1GoTo(Node):
             if self._learn_left == 0:
                 self._self_mask = self._profile < SELF_RADIUS_BOUND
                 self._unmask_count = np.zeros(n, dtype=np.int32)
-                self.get_logger().info(
-                    f'self-occlusion mask: {int(self._self_mask.sum())} '
-                    f'beams (attached fixtures < {SELF_RADIUS_BOUND} m)')
+                frac = float(self._self_mask.sum()) / n
+                if frac > SELF_MASK_MAX_FRAC:
+                    # booted jammed against environment — a mask this big
+                    # would blind the guard, so refuse it
+                    self._announce(
+                        f'GOTO: {frac:.0%} of scan within '
+                        f'{SELF_RADIUS_BOUND} m at boot — self-mask '
+                        'DISABLED (robot parked against obstacles?)')
+                    self._self_mask[:] = False
+                else:
+                    self.get_logger().info(
+                        f'self-occlusion mask: {int(self._self_mask.sum())}'
+                        f' beams (attached fixtures < {SELF_RADIUS_BOUND} m)')
             return                       # guard arms after learning
 
         masked = self._self_mask
@@ -177,7 +192,10 @@ class Robot1GoTo(Node):
         ang = (msg.angle_min + self.laser_yaw
                + np.arange(n, dtype=np.float32) * msg.angle_increment)
         valid = np.isfinite(r) & (r > max(0.05, msg.range_min)) & (r < 8.0)
-        valid &= ~(masked & (r < self._profile + SELF_SLACK_M))
+        # band, not threshold: a fixture sits at a CONSTANT range, so only
+        # returns near the learned distance are dropped — an obstacle
+        # sliding in CLOSER on a masked beam still trips the guard
+        valid &= ~(masked & (np.abs(r - self._profile) < SELF_BAND_M))
         x = r[valid] * np.cos(ang[valid])      # +x = robot forward
         y = r[valid] * np.sin(ang[valid])
 
