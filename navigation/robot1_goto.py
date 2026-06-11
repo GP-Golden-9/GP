@@ -114,6 +114,8 @@ class Robot1GoTo(Node):
         self._profile = None          # per-beam min range while learning
         self._self_mask = None        # bool per beam: attached fixture
         self._unmask_count = None
+        self._nearest = None
+        self._probe_start_d = None    # probing-rotation reference distance
 
         self.create_timer(1.0 / CONTROL_HZ, self._navigate)
         self._status(STATE_IDLE)
@@ -204,6 +206,11 @@ class Robot1GoTo(Node):
         self_hit = ((x > -(self.rear_extent + 0.03))
                     & (x < self.fwd_extent + 0.03)
                     & (np.abs(y) < self.half_width + 0.03))
+        # measured left-side fixture (cable/bracket): tracked at a constant
+        # body position (x=-0.02..+0.12, y=+0.21..0.24) through every pivot
+        # and translation on 2026-06-11 — definitively attached, but it
+        # shifts between boots so the per-beam mask can miss it
+        self_hit |= ((x > -0.12) & (x < 0.15) & (y > 0.16) & (y < 0.27))
         x, y = x[~self_hit], y[~self_hit]
 
         in_corridor = (np.abs(y) < self.corridor_half) & (x > 0.0)
@@ -312,6 +319,29 @@ class Robot1GoTo(Node):
                 self.cmd_pub.publish(cmd)
                 self._status(f'ROTATING:{self.goal[0]:.2f},{self.goal[1]:.2f}')
                 return
+
+            # PROBING ROTATION — the blocker may be a part of the robot a
+            # boot-time mask missed (e.g. a cable that shifts between
+            # boots). Rotate SLOWLY and watch it: something attached turns
+            # with us (distance constant → rotation completes); something
+            # real closes in → instant hard block. Floor at 0.16 m: closer
+            # than that we never rotate at all.
+            near = self._nearest
+            if near is not None and near[2] >= 0.16:
+                if self._probe_start_d is None:
+                    self._probe_start_d = near[2]
+                    self._announce(
+                        f'GOTO: blocker at x={near[0]:+.2f} y={near[1]:+.2f}'
+                        f' d={near[2]:.2f} — probing with slow rotation')
+                if near[2] > self._probe_start_d - 0.03:
+                    self._blocked_since = None
+                    self.state = STATE_ROTATING
+                    cmd.angular.z = 0.15 if angle_err > 0 else -0.15
+                    self.cmd_pub.publish(cmd)
+                    self._status(
+                        f'ROTATING:{self.goal[0]:.2f},{self.goal[1]:.2f}')
+                    return
+                # it is closing in — real obstacle, fall through to block
 
         blocked_reason = None
         if rotating and self._rot_blocked:
