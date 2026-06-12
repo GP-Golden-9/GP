@@ -190,7 +190,9 @@ class _Canvas(QGraphicsView):
             self._pose_press = None
             self._pose_preview.setPath(QPainterPath())
             dx, dy = end.x() - start.x(), end.y() - start.y()
-            th = math.atan2(dy, dx) if math.hypot(dx, dy) > 0.05 else 0.0
+            # NaN heading = "keep the robot's current heading" — a plain
+            # click must only move the robot, never snap it to face east.
+            th = math.atan2(dy, dx) if math.hypot(dx, dy) > 0.05 else float('nan')
             self.posePicked.emit(start.x(), start.y(), th)
             return
         super().mouseReleaseEvent(e)
@@ -338,7 +340,8 @@ class MapWidget(QWidget):
 
         self.btn_nav = tool('⊕ NAVIGATE', 'Click the map to send the active robot there')
         self.btn_pose = tool('⌖ SET POSE', 'Place the active robot on the map: '
-                                           'click = position, drag = heading')
+                                           'drag = position + heading, '
+                                           'plain click = position only')
         self.btn_mark = tool('◈ MARKER', 'Click to drop a manual marker')
         self.btn_nav.setChecked(True)
         for b, mode in ((self.btn_nav, MODE_NAV), (self.btn_pose, MODE_POSE),
@@ -409,7 +412,9 @@ class MapWidget(QWidget):
             b.setChecked(b is btn)
         self.canvas.mode = mode
         hints = {MODE_NAV: '',
-                 MODE_POSE: 'SET POSE: click = position, drag = heading, release = commit',
+                 MODE_POSE: 'SET POSE: press where the robot IS, drag toward '
+                            'where it FACES, release = commit '
+                            '(plain click moves it without turning it)',
                  MODE_MARK: 'MARKER: click to drop a pin'}
         text = hints[mode]
         self._mode_hint.setText(text)

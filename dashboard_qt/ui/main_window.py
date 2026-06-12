@@ -24,6 +24,7 @@ poses are transformed in, goals are transformed back out.
 from __future__ import annotations
 
 import glob
+import math
 import os
 import time
 import zlib
@@ -421,6 +422,8 @@ class MainWindow(QMainWindow):
         odom = self.state[self.active_id].telemetry.get('odom') or \
             {'x': 0.0, 'y': 0.0, 'th': 0.0}
         raw = Pose(odom['x'], odom['y'], odom['th'])
+        if math.isnan(th):          # plain click: reposition, keep heading
+            th = apply_offset(raw, self._offsets[self.active_id]).th
         self._offsets[self.active_id] = offset_from_alignment(
             raw, Pose(x, y, th))
         self._aligned[self.active_id] = True
