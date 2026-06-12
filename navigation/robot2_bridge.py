@@ -188,15 +188,49 @@ class Robot2Bridge(Node):
         self._send('?')
 
     def _serial_reader(self):
-        """Background thread: continuously reads and parses Arduino data."""
+        """Background thread: reads, parses, and — critically — RECOVERS.
+
+        Field root-cause 2026-06-12: robot2's Mega USB link drops and
+        re-enumerates minutes into a session (/dev/ttyUSB0 recreated).
+        The old loop swallowed the resulting exceptions and spun on the
+        stale handle forever: encoders/IMU/STS froze, drive characters
+        went into a dead tty, and the robot 'stopped responding' with
+        every process looking healthy. Masqueraded for two days as DDS
+        transport failures (a service restart reopened the port, which
+        looked like curing SHM/discovery).
+
+        Recovery: any exception OR 3 s of silence (firmware streams at
+        50 Hz — silence IS death) → close, announce on /robot_log, and
+        reconnect in a loop until the Mega is back.
+        """
+        last_line_t = time.monotonic()
         while rclpy.ok():
             if not (self.arduino and self.arduino.is_open):
-                time.sleep(1)
+                self._announce_serial('SERIAL: reconnecting to Mega…')
+                self._connect_arduino()
+                if self.connected:
+                    self._announce_serial('SERIAL: Mega link restored')
+                    last_line_t = time.monotonic()
+                else:
+                    time.sleep(2.0)
                 continue
             try:
                 raw = self.arduino.readline()
-                if not raw:
-                    continue
+            except Exception as exc:
+                self.get_logger().error(f'serial lost ({exc}) — reconnecting')
+                self._announce_serial('SERIAL: Mega link LOST — reconnecting')
+                self._drop_serial()
+                continue
+            if not raw:
+                if time.monotonic() - last_line_t > 3.0:
+                    self.get_logger().error(
+                        'serial silent 3 s — USB re-enumerated? reconnecting')
+                    self._announce_serial(
+                        'SERIAL: Mega silent 3 s — reconnecting')
+                    self._drop_serial()
+                continue
+            last_line_t = time.monotonic()
+            try:
                 line = raw.decode(errors='ignore').strip()
                 if line.startswith('D:'):
                     self._parse_sensor_data(line)
@@ -210,6 +244,22 @@ class Robot2Bridge(Node):
                         self.get_logger().warn(f'Arduino: {line}')
             except Exception:
                 time.sleep(0.1)
+
+    def _drop_serial(self):
+        try:
+            if self.arduino:
+                self.arduino.close()
+        except Exception:
+            pass
+        self.arduino = None
+        self.connected = False
+        time.sleep(1.0)          # let udev settle after a re-enumeration
+
+    def _announce_serial(self, line: str):
+        try:
+            self.log_pub.publish(String(data=line))
+        except Exception:
+            pass
 
     def _parse_sts_data(self, line: str):
         """Parse old firmware format: STS:speed,estop,enc1,enc2,enc3,enc4"""
