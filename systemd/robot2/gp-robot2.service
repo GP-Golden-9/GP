@@ -1,7 +1,8 @@
 [Unit]
 Description=GP Robot2 ROS stack (bridge + odom + goto + gateway)
 Requires=gp-preflight.service
-After=gp-preflight.service network-online.target
+Wants=gp-discovery.service
+After=gp-preflight.service gp-discovery.service network-online.target
 
 [Service]
 Type=simple
@@ -10,6 +11,8 @@ Environment=GP_DIR=/home/pi/GP
 # Deterministic DDS transport: UDP loopback only, SHM disabled — the
 # shared-memory transport was a per-boot lottery (see the XML's header)
 Environment=FASTRTPS_DEFAULT_PROFILES_FILE=/home/pi/GP/config/fastdds_udp_only.xml
+# Unicast discovery via the local server — no multicast leases to lose
+Environment=ROS_DISCOVERY_SERVER=127.0.0.1:11811
 WorkingDirectory=/home/pi/GP
 # Brownout crash-loops leave stale FastDDS shared-memory segments in
 # /dev/shm; with ROS_LOCALHOST_ONLY=1 they silently eat every message

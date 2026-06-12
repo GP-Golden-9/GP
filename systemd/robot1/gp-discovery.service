@@ -1,0 +1,20 @@
+[Unit]
+Description=GP FastDDS discovery server (unicast localhost; immune to multicast loss)
+# Why: field evidence 2026-06-12 — on robot2, ALL inter-node DDS delivery
+# died exactly ~23 s after every boot: multicast discovery announcements
+# were being lost, the ~20 s participant lease expired, and every
+# endpoint silently unmatched (graph queries still showed matches because
+# fresh CLI participants re-discover). A discovery SERVER replaces
+# multicast leases with unicast sessions on 127.0.0.1 — the failure mode
+# cannot occur. Clients opt in via ROS_DISCOVERY_SERVER=127.0.0.1:11811
+# (set in the gp-robot unit; debugging shells need the same export).
+
+[Service]
+Type=simple
+User=pi
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && exec fastdds discovery -i 0 -l 127.0.0.1 -p 11811'
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
