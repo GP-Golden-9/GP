@@ -66,6 +66,18 @@ drive:
   min_pwm: 150
   deadman_timeout_s: 0.8
   keepalive_period_s: 0.3
+  # Slip gate (carpet): when encoder-implied rotation disagrees with the
+  # gyro by more than this, the wheels are scrubbing — odometry takes the
+  # gyro for heading and discounts the distance estimate. 0.6 rad/s sits
+  # well above gyro bias AND above the error a mis-calibrated wheel_base
+  # produces at full pivot rate, so it only fires on genuine slip.
+  slip_gate_rad_s: 0.6
+  # PWM slew limit (soft launch). Stepping straight to min_pwm 150 /
+  # turn_pwm 215 from rest is the torque kick that breaks traction on
+  # carpet in the first place. 600/s ramps a dead-stop launch to full
+  # PWM in ~175 ms — imperceptible lag, much less wheelspin. Downward
+  # changes (slowing, stopping) are NEVER ramped.
+  ramp_pwm_per_s: 600
 
 goto:
   goal_tolerance_m: 0.12

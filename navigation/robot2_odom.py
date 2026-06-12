@@ -20,6 +20,7 @@ only the last-resort fallback if the config cannot be read.
 import math
 import os
 import sys
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -41,6 +42,7 @@ WHEEL_DIAMETER = 0.085
 TICKS_PER_REV = 330
 WHEEL_BASE = 0.225
 ENCODER_HEADING_WEIGHT = 0.3
+SLIP_GATE_RAD_S = 0.6
 
 try:
     _cfg = load_config(_CFG_PATH)
@@ -50,6 +52,8 @@ try:
     WHEEL_BASE = float(get_path(_cfg, 'drive.wheel_base_m', WHEEL_BASE))
     ENCODER_HEADING_WEIGHT = float(get_path(
         _cfg, 'drive.encoder_heading_weight', ENCODER_HEADING_WEIGHT))
+    SLIP_GATE_RAD_S = float(get_path(
+        _cfg, 'drive.slip_gate_rad_s', SLIP_GATE_RAD_S))
 except Exception:                       # config unreadable → fallbacks
     pass
 
@@ -91,6 +95,11 @@ class Robot2Odom(Node):
         self.gyro_z = 0.0             # Latest gyro reading (rad/s)
         self._imu_zero_streak = 0
         self._imu_dead = False
+
+        # Slip gate (carpet): wheels spinning without matching body
+        # rotation. Counted for diagnostics, logged at most every 2 s.
+        self._slip_events = 0
+        self._last_slip_log = 0.0
 
         # Timer for publishing at 50 Hz
         self.create_timer(0.02, self._publish_odom)
@@ -167,8 +176,32 @@ class Robot2Odom(Node):
             d_theta = d_theta_enc
         else:
             d_theta_imu = self.gyro_z * dt
-            d_theta = (ENCODER_HEADING_WEIGHT * d_theta_enc +
-                       (1.0 - ENCODER_HEADING_WEIGHT) * d_theta_imu)
+            w_enc = d_theta_enc / dt
+            if abs(w_enc - self.gyro_z) > SLIP_GATE_RAD_S:
+                # SLIP GATE: encoders claim a rotation the gyro doesn't
+                # see (carpet pivot scrub) — or vice versa (robot nudged
+                # while wheels grip). The gyro measures the BODY, so it
+                # wins heading outright; and since the same slipping
+                # ticks inflate the distance estimate, scale distance by
+                # how much of the claimed rotation was real. Symmetric
+                # straight-line wheelspin is invisible here by design —
+                # that one is prevented by the bridge's PWM ramp, not
+                # corrected.
+                d_theta = d_theta_imu
+                trust = min(1.0, (abs(self.gyro_z) + 0.05) /
+                            (abs(w_enc) + 0.05))
+                distance *= trust
+                self._slip_events += 1
+                now_mono = time.monotonic()
+                if now_mono - self._last_slip_log > 2.0:
+                    self._last_slip_log = now_mono
+                    self.get_logger().warn(
+                        f'WHEEL SLIP: enc {w_enc:+.2f} rad/s vs gyro '
+                        f'{self.gyro_z:+.2f} — gyro heading, distance '
+                        f'x{trust:.2f} (event #{self._slip_events})')
+            else:
+                d_theta = (ENCODER_HEADING_WEIGHT * d_theta_enc +
+                           (1.0 - ENCODER_HEADING_WEIGHT) * d_theta_imu)
 
         # ── Update pose ──
         self.theta += d_theta

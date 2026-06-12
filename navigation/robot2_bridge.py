@@ -59,13 +59,19 @@ class Robot2Bridge(Node):
         # commander would leave the robot driving forever.
         self.declare_parameter('keepalive_period', 0.3)
         self.declare_parameter('deadman_timeout', 0.8)
+        # PWM slew limit (config drive.ramp_pwm_per_s). Stepping straight
+        # to min_pwm/turn_pwm from rest is a torque kick that spins the
+        # wheels on carpet — wheelspin the encoders dutifully count as
+        # motion (odometry drift). Ramping reaches full PWM in ~175 ms.
+        self.declare_parameter('ramp_pwm_per_s', 600)
 
         # ── State ──
         self.arduino = None
         self.connected = False
         self.manual_mode = False
         self.manual_last_time = time.time()
-        self.pwm_speed = 180
+        self.pwm_speed = 180            # what the firmware currently has
+        self.pwm_target = 180           # what the active maneuver wants
         self.last_cmd = 'S'
         self.last_motion = 'S'          # last F/B/L/R/S actually sent
         self.last_twist_time = 0.0      # monotonic time of last accepted Twist
@@ -106,6 +112,7 @@ class Robot2Bridge(Node):
         # ── Timers ──
         self.create_timer(0.1, self._check_manual_timeout)
         self.create_timer(self.get_parameter('keepalive_period').value, self._keepalive)
+        self.create_timer(0.05, self._ramp_tick)   # PWM slew, 20 Hz
         # Note: No _poll_status timer — Robot 2 firmware streams D: packets
         # at 50 Hz automatically. Sending '?' would trigger printHelp() and
         # flood the serial buffer with junk text.
@@ -386,10 +393,37 @@ class Robot2Bridge(Node):
             turn_pwm = int(self.get_parameter('turn_pwm').value)
             factor = min(abs(angular) / 1.0, 1.0)
             new_pwm = max(turn_pwm, int(min_pwm + factor * (255 - min_pwm)))
-        if abs(new_pwm - self.pwm_speed) >= 5:      # don't spam serial
-            self.pwm_speed = new_pwm
-            self._send(f'P{new_pwm}')
+
+        # PWM is no longer stepped to directly — _ramp_tick slews toward
+        # the target. Soft launch: from rest, torque starts at the
+        # static-friction floor and climbs, instead of kicking straight
+        # to min_pwm/turn_pwm and spinning the wheels on carpet.
+        self.pwm_target = new_pwm
+        if cmd != 'S' and self.last_motion == 'S' and self.pwm_speed != min_pwm:
+            self.pwm_speed = min_pwm
+            self._send(f'P{min_pwm}')
         return cmd
+
+    def _ramp_tick(self):
+        """Slew the firmware PWM toward the maneuver target — UP only.
+
+        Downward changes (slowing, stopping) apply immediately: reducing
+        torque never breaks traction, and braking must never lag. The
+        firmware applies a new P to the motion already in progress, so
+        this works mid-drive without re-sending the direction letter.
+        """
+        if self.estop or self.last_motion == 'S':
+            return
+        target, cur = self.pwm_target, self.pwm_speed
+        if abs(target - cur) < 5:                   # don't spam serial
+            return
+        if target < cur:
+            new = target
+        else:
+            rate = int(self.get_parameter('ramp_pwm_per_s').value)
+            new = min(target, cur + max(5, int(rate * 0.05)))
+        self.pwm_speed = new
+        self._send(f'P{new}')
 
     def _manual_cb(self, msg: Twist):
         self._n_manual += 1
@@ -421,8 +455,11 @@ class Robot2Bridge(Node):
             self._send(cmd)
 
     def _speed_cb(self, msg: Float32):
-        self.pwm_speed = int(80 + msg.data * 175)
-        self._send(f'P{self.pwm_speed}')
+        pwm = int(80 + msg.data * 175)
+        self.pwm_target = pwm
+        if self.last_motion == 'S':     # idle: take effect immediately
+            self.pwm_speed = pwm
+            self._send(f'P{pwm}')
 
     def _estop_cb(self, msg: Bool):
         """Emergency stop — highest priority, latches until released."""
