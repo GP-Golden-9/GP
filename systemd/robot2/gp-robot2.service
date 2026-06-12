@@ -7,6 +7,9 @@ After=gp-preflight.service network-online.target
 Type=simple
 User=pi
 Environment=GP_DIR=/home/pi/GP
+# Deterministic DDS transport: UDP loopback only, SHM disabled — the
+# shared-memory transport was a per-boot lottery (see the XML's header)
+Environment=FASTRTPS_DEFAULT_PROFILES_FILE=/home/pi/GP/config/fastdds_udp_only.xml
 WorkingDirectory=/home/pi/GP
 # Brownout crash-loops leave stale FastDDS shared-memory segments in
 # /dev/shm; with ROS_LOCALHOST_ONLY=1 they silently eat every message
