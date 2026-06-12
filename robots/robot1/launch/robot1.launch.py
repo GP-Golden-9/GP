@@ -55,7 +55,10 @@ def generate_launch_description():
                                           '(the console uses the ZMQ gateway)'),
 
         SetEnvironmentVariable('ROS_DOMAIN_ID', ROS_DOMAIN_ID),
-        SetEnvironmentVariable('ROS_LOCALHOST_ONLY', '1'),
+        # Localhost isolation via transport whitelist + localhost discovery
+        # server (see robot2.launch.py) — the env flag's interface tracking
+        # was the silent killer of local delivery on flaky WiFi.
+        SetEnvironmentVariable('ROS_LOCALHOST_ONLY', '0'),
         SetEnvironmentVariable('GP_RUN_ID', RUN_ID),
 
         # LiDAR driver — run DIRECTLY (not via rplidar_a1_launch.py) so OUR

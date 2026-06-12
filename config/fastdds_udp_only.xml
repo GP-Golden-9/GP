@@ -18,6 +18,15 @@
     <transport_descriptor>
       <transport_id>udp_only</transport_id>
       <type>UDPv4</type>
+      <!-- Hard localhost isolation AT THE TRANSPORT: DDS physically
+           cannot leave loopback. This replaces ROS_LOCALHOST_ONLY=1,
+           whose interface tracking is fragile on flaky WiFi (Humble
+           pathology: any wlan state change can silently break all
+           localhost delivery - observed as robot2's recurring
+           "everything deaf N minutes in"). -->
+      <interfaceWhiteList>
+        <address>127.0.0.1</address>
+      </interfaceWhiteList>
     </transport_descriptor>
   </transport_descriptors>
 

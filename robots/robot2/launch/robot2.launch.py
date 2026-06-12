@@ -51,7 +51,12 @@ def generate_launch_description():
                                           '(the console uses the ZMQ gateway)'),
 
         SetEnvironmentVariable('ROS_DOMAIN_ID', ROS_DOMAIN_ID),
-        SetEnvironmentVariable('ROS_LOCALHOST_ONLY', '1'),
+        # Localhost isolation now lives in the TRANSPORT (interface
+        # whitelist 127.0.0.1 in config/fastdds_udp_only.xml) plus the
+        # localhost-bound discovery server. ROS_LOCALHOST_ONLY=1 is OFF on
+        # purpose: its interface tracking silently killed ALL local DDS
+        # delivery whenever the flaky wlan changed state (field, 06-12).
+        SetEnvironmentVariable('ROS_LOCALHOST_ONLY', '0'),
         SetEnvironmentVariable('GP_RUN_ID', RUN_ID),
 
         _py('navigation/robot2_bridge.py'),
