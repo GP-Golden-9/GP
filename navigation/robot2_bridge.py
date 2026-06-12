@@ -78,6 +78,11 @@ class Robot2Bridge(Node):
         self._stall_enc = None          # encoder snapshot at motion start
         self._stall_since = None
         self._stall_announced = False
+        # Receive-proof counters: CLI graph introspection is unavailable
+        # in discovery-server mode (Humble), so the bridge itself logs
+        # arrival of drive topics — first message and every 50th.
+        self._n_manual = 0
+        self._n_auto = 0
 
         # ── Connect to Arduino ──
         self._connect_arduino()
@@ -387,6 +392,11 @@ class Robot2Bridge(Node):
         return cmd
 
     def _manual_cb(self, msg: Twist):
+        self._n_manual += 1
+        if self._n_manual == 1 or self._n_manual % 50 == 0:
+            self.get_logger().info(
+                f'/manual_cmd #{self._n_manual} vx={msg.linear.x:+.2f} '
+                f'wz={msg.angular.z:+.2f} estop={self.estop}')
         if self.estop:
             return
         self.manual_mode = True
@@ -397,6 +407,12 @@ class Robot2Bridge(Node):
             self._send(cmd)
 
     def _auto_cb(self, msg: Twist):
+        self._n_auto += 1
+        if self._n_auto == 1 or self._n_auto % 50 == 0:
+            self.get_logger().info(
+                f'/cmd_vel #{self._n_auto} vx={msg.linear.x:+.2f} '
+                f'wz={msg.angular.z:+.2f} estop={self.estop} '
+                f'manual={self.manual_mode}')
         if self.estop or self.manual_mode:
             return
         self.last_twist_time = time.monotonic()
