@@ -101,6 +101,19 @@ class Robot2Odom(Node):
         self._slip_events = 0
         self._last_slip_log = 0.0
 
+        # Gyro zero-rate bias auto-calibration. The firmware streams RAW
+        # MPU6050 readings and nothing downstream subtracted the zero-rate
+        # offset (spec: can be several deg/s, drifts with temperature) —
+        # integrated at 70% weight that walks the heading away within a
+        # minute while the robot sits still. Learned whenever the wheels
+        # are stopped: wide capture window until first lock (raw offset
+        # can be large), narrow tracking window afterwards (so a hand-push
+        # while parked is never learned as "bias").
+        self.gyro_bias = 0.0
+        self._bias_locked = False
+        self._bias_n = 0
+        self._still_streak = 0
+
         # Timer for publishing at 50 Hz
         self.create_timer(0.02, self._publish_odom)
 
@@ -152,6 +165,24 @@ class Robot2Odom(Node):
         d_fr = enc[2] - self.prev_enc[2]
         d_rr = enc[3] - self.prev_enc[3]
 
+        # ── Gyro bias learning (wheels stopped ≥ 0.5 s = robot still) ──
+        ticks_total = abs(d_fl) + abs(d_rl) + abs(d_fr) + abs(d_rr)
+        if ticks_total == 0:
+            self._still_streak += 1
+            window = 0.06 if self._bias_locked else 0.5
+            if (self._still_streak >= 25 and not self._imu_dead
+                    and abs(self.gyro_z - self.gyro_bias) < window):
+                self.gyro_bias += 0.02 * (self.gyro_z - self.gyro_bias)
+                self._bias_n += 1
+                if not self._bias_locked and self._bias_n >= 150:
+                    self._bias_locked = True
+                    self.get_logger().info(
+                        f'gyro bias locked: '
+                        f'{math.degrees(self.gyro_bias):+.2f} deg/s '
+                        '(was silently integrated into heading before)')
+        else:
+            self._still_streak = 0
+
         # Average left and right sides
         d_left  = (d_fl + d_rl) / 2.0
         d_right = (d_fr + d_rr) / 2.0
@@ -175,9 +206,15 @@ class Robot2Odom(Node):
         if self._imu_dead:
             d_theta = d_theta_enc
         else:
-            d_theta_imu = self.gyro_z * dt
+            gz = self.gyro_z - self.gyro_bias      # bias-corrected rate
+            d_theta_imu = gz * dt
             w_enc = d_theta_enc / dt
-            if abs(w_enc - self.gyro_z) > SLIP_GATE_RAD_S:
+            if ticks_total == 0 and abs(gz) < 0.03:
+                # Parked: wheels stopped and gyro at noise floor —
+                # integrating that noise creeps the heading while the
+                # robot just sits there. Freeze it.
+                d_theta = 0.0
+            elif abs(w_enc - gz) > SLIP_GATE_RAD_S:
                 # SLIP GATE: encoders claim a rotation the gyro doesn't
                 # see (carpet pivot scrub) — or vice versa (robot nudged
                 # while wheels grip). The gyro measures the BODY, so it
@@ -188,7 +225,7 @@ class Robot2Odom(Node):
                 # that one is prevented by the bridge's PWM ramp, not
                 # corrected.
                 d_theta = d_theta_imu
-                trust = min(1.0, (abs(self.gyro_z) + 0.05) /
+                trust = min(1.0, (abs(gz) + 0.05) /
                             (abs(w_enc) + 0.05))
                 distance *= trust
                 self._slip_events += 1
@@ -197,7 +234,7 @@ class Robot2Odom(Node):
                     self._last_slip_log = now_mono
                     self.get_logger().warn(
                         f'WHEEL SLIP: enc {w_enc:+.2f} rad/s vs gyro '
-                        f'{self.gyro_z:+.2f} — gyro heading, distance '
+                        f'{gz:+.2f} — gyro heading, distance '
                         f'x{trust:.2f} (event #{self._slip_events})')
             else:
                 d_theta = (ENCODER_HEADING_WEIGHT * d_theta_enc +

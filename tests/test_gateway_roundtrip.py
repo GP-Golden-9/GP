@@ -92,6 +92,32 @@ def test_drive_feeds_deadman_and_trips_on_silence(rig):
     assert server.deadman_tripped(now + 9.0) is False     # only fires once
 
 
+def test_stale_drive_burst_conflated_to_newest(rig):
+    """A WiFi stall flushes queued drives in one burst — only the newest
+    may execute, or the robot replays the past (field 2026-06-12)."""
+    server, dealer, _sub = rig
+    executed = []
+    server.set_handler(
+        cmds.CMD_DRIVE,
+        lambda env: (executed.append(env.payload['vx']) or True, 'ok'))
+    from gpcore.protocol.envelope import encode
+    for i in range(5):
+        env = cmds.make_command(cmds.CMD_DRIVE, {'vx': 0.1 * i, 'wz': 0.0},
+                                seq=i + 1, run_id='testrun', src='dash')
+        dealer.send(encode(env))
+    time.sleep(0.05)                     # let the whole burst land
+    server.poll_commands(timeout_ms=200)
+
+    assert executed == [pytest.approx(0.4)]   # newest only
+    assert server.stats['conflated'] == 4
+    acks = 0                                  # every command still acked
+    while dealer.poll(200):
+        ack = decode(dealer.recv())
+        assert ack.payload['ok'] is True
+        acks += 1
+    assert acks == 5
+
+
 def test_estop_latch_blocks_drive(rig):
     server, dealer, _sub = rig
     server.set_handler(cmds.CMD_ESTOP, lambda env: (True, 'engaged'))

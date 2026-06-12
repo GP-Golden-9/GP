@@ -235,6 +235,16 @@ class CommandClient(QObject):
                     info = pending[cmd_id]
                     if now < info['deadline']:
                         continue
+                    # NEVER retry a drive: it's a 10 Hz stream, so a retry
+                    # delivers an OBSOLETE stick position after the link
+                    # recovers — the robot replays the past (field
+                    # 2026-06-12: 1 s of stick = 2-3 s of motion). The next
+                    # stream tick carries fresher intent, and the gateway
+                    # deadman covers total silence. Pings likewise: the
+                    # next periodic ping IS the retry.
+                    if info['env'].type in (cmds.CMD_DRIVE, cmds.CMD_PING):
+                        pending.pop(cmd_id)
+                        continue
                     if info['attempts'] <= cmds.ACK_RETRIES:
                         self._transmit(sock, info['env'], pending, now)
                     else:

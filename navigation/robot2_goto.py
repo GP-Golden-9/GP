@@ -18,6 +18,8 @@ Publishes:
 """
 
 import math
+import time
+
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist, PoseStamped
@@ -40,6 +42,15 @@ MAX_ANGULAR_SPEED = 0.40     # rad/s — turn speed limit
 # Proportional gains
 KP_DISTANCE       = 0.5     # linear speed proportional to distance
 KP_ANGLE          = 1.2     # angular speed proportional to angle error
+
+# Stuck watchdog: actively commanding motion but the odometry shows no
+# progress toward the goal (blocked by an unmapped obstacle, high-centered,
+# or wheels slipping — the odometry slip gate discounts slipping ticks, so
+# a wheel-spinning stuck robot reads as "no progress" here, which is
+# exactly what makes this detector work without a rangefinder).
+STUCK_TIMEOUT_S   = 8.0      # seconds without progress → abandon the goal
+PROGRESS_DIST_M   = 0.03     # closing on the goal by this much = progress
+PROGRESS_ANG_RAD  = 0.10     # rotating toward it by this much = progress
 
 # Navigation states
 STATE_IDLE      = 'IDLE'
@@ -74,6 +85,11 @@ class Robot2GoTo(Node):
         self.goal_y = None
         self.has_goal = False
 
+        # Stuck watchdog state
+        self._best_dist = None
+        self._best_ang = None
+        self._last_progress = 0.0
+
         # ── Control loop at 20 Hz ──
         self.create_timer(0.05, self._navigate)
 
@@ -106,6 +122,9 @@ class Robot2GoTo(Node):
         self.goal_y = msg.pose.position.y
         self.has_goal = True
         self.state = STATE_ROTATING
+        self._best_dist = None
+        self._best_ang = None
+        self._last_progress = time.monotonic()
 
         self.get_logger().info(
             f'📍 New goal: ({self.goal_x:.2f}, {self.goal_y:.2f})')
@@ -150,6 +169,26 @@ class Robot2GoTo(Node):
                 self.get_logger().info(
                     f'✅ Arrived at ({self.goal_x:.2f}, {self.goal_y:.2f})!')
             self.has_goal = False
+            return
+
+        # ── Stuck watchdog: commanded motion must produce progress ──
+        now = time.monotonic()
+        if self._best_dist is None or distance < self._best_dist - PROGRESS_DIST_M:
+            self._best_dist = distance
+            self._last_progress = now
+        if self._best_ang is None or abs(angle_error) < self._best_ang - PROGRESS_ANG_RAD:
+            self._best_ang = abs(angle_error)
+            self._last_progress = now
+        if now - self._last_progress > STUCK_TIMEOUT_S:
+            self.get_logger().warn(
+                f'STUCK: no progress for {STUCK_TIMEOUT_S:.0f} s '
+                f'({distance:.2f} m short of goal) — stopping, goal abandoned')
+            self.has_goal = False
+            self.state = STATE_IDLE
+            self.cmd_pub.publish(Twist())
+            # deliberately NOT cancel_goal(): keep STUCK on /nav_status so
+            # the operator sees WHY the robot gave up, not just 'IDLE'
+            self.status_pub.publish(String(data=f'STUCK:{distance:.2f}m'))
             return
 
         # ── Phase 2: ROTATE to face goal ──

@@ -68,7 +68,8 @@ class GatewayServer:
         self.estop_latched = False
 
         self._handlers: Dict[str, CommandHandler] = {}
-        self.stats = {'cmds': 0, 'acks': 0, 'rejected': 0, 'deduped': 0}
+        self.stats = {'cmds': 0, 'acks': 0, 'rejected': 0, 'deduped': 0,
+                      'conflated': 0}
 
         # The gateway's command tick runs in its own executor thread while
         # ROS callbacks publish from another — ZMQ sockets are NOT
@@ -97,27 +98,58 @@ class GatewayServer:
     def poll_commands(self, timeout_ms: int = 0) -> int:
         """Drain pending commands, dispatch handlers, send ACKs.
 
+        The whole backlog is drained BEFORE dispatching so cmd.drive can
+        be CONFLATED: after a WiFi stall the client's DEALER flushes
+        seconds of queued drive commands in one burst, and executing each
+        one re-armed the deadman over and over — the robot acted out the
+        past (field 2026-06-12: 1 s of stick = 2-3 s of motion). Only the
+        newest drive in the drain reflects the operator's current stick;
+        older ones are acked as superseded without executing. Non-drive
+        commands keep their arrival order.
+
         Returns the number of commands processed. Call from the gateway's
         main loop at ≥ 20 Hz.
         """
-        processed = 0
+        batch: list = []
         while True:
-            if not self.cmd_sock.poll(timeout_ms if processed == 0 else 0):
-                return processed
+            if not self.cmd_sock.poll(timeout_ms if not batch else 0):
+                break
             try:
                 frames = self.cmd_sock.recv_multipart(zmq.NOBLOCK)
             except zmq.Again:
-                return processed
-            processed += 1
+                break
             if len(frames) < 2:
                 continue
-            identity, raw = frames[0], frames[-1]
-            self._handle_one(identity, raw)
+            batch.append((frames[0], frames[-1]))
+        if not batch:
+            return 0
 
-    def _handle_one(self, identity: bytes, raw: bytes) -> None:
+        envs = []
+        for _identity, raw in batch:
+            try:
+                envs.append(decode(raw))
+            except ProtocolError:
+                envs.append(None)          # _handle_one rejects it properly
+        newest_drive = max((i for i, e in enumerate(envs)
+                            if e is not None and e.type == cmds.CMD_DRIVE),
+                           default=-1)
+        for i, (identity, raw) in enumerate(batch):
+            env = envs[i]
+            if (env is not None and env.type == cmds.CMD_DRIVE
+                    and i != newest_drive):
+                self.stats['conflated'] += 1
+                self._ack(identity, env, ok=True,
+                          detail='superseded by newer drive')
+                continue
+            self._handle_one(identity, raw, env)
+        return len(batch)
+
+    def _handle_one(self, identity: bytes, raw: bytes,
+                    env: Optional[Envelope] = None) -> None:
         self.stats['cmds'] += 1
         try:
-            env = decode(raw)
+            if env is None:
+                env = decode(raw)
             cmd_id = cmds.validate_command(env)
         except (ProtocolError, cmds.CommandError) as exc:
             self.stats['rejected'] += 1
