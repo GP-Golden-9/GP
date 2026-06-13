@@ -12,7 +12,12 @@
 //    · /telemetry adds rssi, uptime, last_cmd_age for the health panel
 //    · WiFi credentials moved to config_secrets.h (gitignored; template
 //      committed) — they were hardcoded in the repo
-//  Pins unchanged from v1 (verified working on the build).
+//    · SERVO added (2026-06-13): one slew-limited servo on GPIO19 with a
+//      /servo?deg= endpoint, telemetry field, and a web-UI slider. Mount
+//      the ultrasonic on it for a scanning sonar, or use as a pointer/arm.
+//  Hardware: 4 motors (two L298N channels, pairs), 1 ultrasonic, 1 servo,
+//  MQ gas sensor, MPU6050 IMU. NO wheel encoders (heading is IMU-only).
+//  Motor/sensor pins unchanged from v1 (verified working on the build).
 // ═══════════════════════════════════════════════════════════════════════
 
 #include <WiFi.h>
@@ -22,6 +27,7 @@
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
+#include <ESP32Servo.h>          // Library Manager: "ESP32Servo" by K. Harrington
 
 #include "config_secrets.h"   // WIFI_SSID / WIFI_PASSWORD — see .template
 
@@ -40,6 +46,9 @@
 #define ECHO_PIN 5
 #define GAS_PIN 34
 #define BUZZER_PIN 15
+// Servo signal pin. GPIO19 is free, output-capable, and NOT a strapping
+// pin (unlike 0/2/5/12/15) so it can't disturb the FTDI flash sequence.
+#define SERVO_PIN 19
 
 // ── Tuning ──────────────────────────────────────────────────────────────
 #define DRIVE_SPEED          230
@@ -51,13 +60,27 @@
 #define GAS_ALARM_MIN_MS     10000UL  // alarm latches at least this long
 #define HOSTNAME             "robot3"
 
+// Servo: clamp to a safe arc, home centered, and SLEW toward the target a
+// few degrees at a time instead of snapping — a full-swing jump is a
+// current spike, and this build has a brownout history.
+#define SERVO_MIN_DEG        0
+#define SERVO_MAX_DEG        180
+#define SERVO_HOME_DEG       90
+#define SERVO_SLEW_MS        20       // step interval
+#define SERVO_STEP_DEG       3        // ~150 deg/s — smooth, low inrush
+
 WebServer server(80);
 Adafruit_MPU6050 mpu;
+Servo armServo;
 
 float dist_cm = 0;
 int   gas_val = 0;
 float ax = 0, ay = 0;
 bool  mpu_ok = false;
+
+int   servo_deg = SERVO_HOME_DEG;     // current (slewed) angle
+int   servo_target = SERVO_HOME_DEG;  // commanded angle
+unsigned long lastServoMove = 0;
 
 char  currentDir = 'S';
 unsigned long lastCmdTime = 0;
@@ -134,6 +157,12 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     <button class="btn" onmousedown="cmd('R')" onmouseup="cmd('S')" ontouchstart="cmd('R')" ontouchend="cmd('S')">RIGHT</button><br>
     <button class="btn" onmousedown="cmd('B')" onmouseup="cmd('S')" ontouchstart="cmd('B')" ontouchend="cmd('S')">DOWN</button>
   </div>
+  <div class="status-card">
+    <p>Servo: <span id="sv" class="val">90</span>&deg;</p>
+    <input type="range" min="0" max="180" value="90" style="width:90%"
+           oninput="document.getElementById('sv').innerText=this.value"
+           onchange="servo(this.value)">
+  </div>
   <script>
     let held = null;
     setInterval(() => {
@@ -153,6 +182,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       held = (dir === 'S') ? null : dir;
       fetch('/control?dir=' + dir).catch(()=>{});
     }
+    function servo(deg) { fetch('/servo?deg=' + deg).catch(()=>{}); }
   </script>
 </body>
 </html>
@@ -194,6 +224,19 @@ void setup() {
   pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT);
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(TRIG_PIN, OUTPUT); pinMode(ECHO_PIN, INPUT);
+
+  // Servo FIRST — claim its LEDC timers before the motors' analogWrite()
+  // touches LEDC, so the two PWM users don't fight over a timer. If motor
+  // speed control ever misbehaves after a core update, that's the clash —
+  // the fix is to move ENA/ENB to ledcWrite(); see docs/robot3_flashing.md.
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
+  armServo.setPeriodHertz(50);                 // standard hobby servo
+  armServo.attach(SERVO_PIN, 500, 2400);       // µs pulse range
+  armServo.write(SERVO_HOME_DEG);
+
   motorStop();
 
   chirp(2, 150);                      // boot beep
@@ -214,6 +257,7 @@ void setup() {
                   ",\"a\":" + String(alarmActive ? 1 : 0) +
                   ",\"rssi\":" + String(WiFi.RSSI()) +
                   ",\"uptime\":" + String((millis() - bootMillis) / 1000) +
+                  ",\"servo\":" + String(servo_deg) +
                   ",\"last_cmd_age\":" + String(millis() - lastCmdTime) + "}";
     server.send(200, "application/json", json);
   });
@@ -222,6 +266,12 @@ void setup() {
     String d = server.arg("dir");
     setDirection(d.length() ? d[0] : 'S');
     server.send(200, "text/plain", "OK");
+  });
+
+  server.on("/servo", []() {
+    int deg = server.arg("deg").toInt();
+    servo_target = constrain(deg, SERVO_MIN_DEG, SERVO_MAX_DEG);
+    server.send(200, "text/plain", "OK:" + String(servo_target));
   });
 
   server.begin();
@@ -255,6 +305,20 @@ void loop() {
     motorStop(); currentDir = 'S';
     chirp(1, 60);
     Serial.println("CMD WATCHDOG — motors stopped");
+  }
+
+  // 2b. Servo slew: step toward the target so a big move spreads its
+  // current draw over time instead of one brown-out-inducing lunge. The
+  // servo HOLDS position on WiFi loss (no watchdog) — unlike the motors,
+  // a stuck arm angle is safe, and snapping it home could swing it into
+  // something.
+  if (now - lastServoMove > SERVO_SLEW_MS && servo_deg != servo_target) {
+    lastServoMove = now;
+    if (servo_deg < servo_target)
+      servo_deg = min(servo_target, servo_deg + SERVO_STEP_DEG);
+    else
+      servo_deg = max(servo_target, servo_deg - SERVO_STEP_DEG);
+    armServo.write(servo_deg);
   }
 
   // 3. Sensors + latched gas alarm

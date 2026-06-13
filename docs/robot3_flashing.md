@@ -78,6 +78,11 @@ GPIO12 high: it selects 1.8 V flash and bricks the boot.)
 
 ---
 
+## Library dependencies (Arduino Library Manager)
+- **Adafruit MPU6050** (+ Adafruit Unified Sensor, pulled in automatically)
+- **ESP32Servo** by Kevin Harrington — for the servo on GPIO19
+- WiFi / WebServer / ESPmDNS / ArduinoOTA / Wire ship with the ESP32 core
+
 ## Upload settings
 - **Board:** ESP32 Dev Module / DOIT ESP32 DEVKIT V1
 - **Port:** the FTDI's COM port (needs FTDI VCP driver installed)
