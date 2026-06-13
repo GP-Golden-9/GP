@@ -20,7 +20,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from std_msgs.msg import String, Float32, Int32MultiArray, Bool
-from sensor_msgs.msg import Imu
+from sensor_msgs.msg import Imu, Range
 import serial
 import time
 import threading
@@ -59,6 +59,18 @@ class Robot2Bridge(Node):
         # commander would leave the robot driving forever.
         self.declare_parameter('keepalive_period', 0.3)
         self.declare_parameter('deadman_timeout', 0.8)
+        # Front ultrasonics (config ultrasonic.*). The firmware appends two
+        # distances (cm) to the D: packet; the bridge publishes them as
+        # Range and — critically — blocks any FORWARD command while either
+        # reads below stop_cm. This back-stops BOTH manual and auto driving:
+        # driving into a wall is never intended. Turns/reverse stay allowed
+        # (the sensors only face forward). Hysteresis (clear_cm) stops it
+        # flapping at the threshold.
+        self.declare_parameter('us_enabled', True)
+        self.declare_parameter('us_max_cm', 150)
+        self.declare_parameter('us_stop_cm', 25)
+        self.declare_parameter('us_clear_cm', 40)
+        self.declare_parameter('us_fov_deg', 15.0)
         # PWM slew limit (config drive.ramp_pwm_per_s). Stepping straight
         # to min_pwm/turn_pwm from rest is a torque kick that spins the
         # wheels on carpet — wheelspin the encoders dutifully count as
@@ -89,6 +101,14 @@ class Robot2Bridge(Node):
         # arrival of drive topics — first message and every 50th.
         self._n_manual = 0
         self._n_auto = 0
+        # Front ultrasonics: latest filtered ranges (cm) + forward-block
+        # latch. Written by the serial reader thread, read in the command
+        # callbacks — plain int reads/writes are atomic under the GIL.
+        self._us_max_cm = int(self.get_parameter('us_max_cm').value)
+        self.us_left_cm = self._us_max_cm
+        self.us_right_cm = self._us_max_cm
+        self._fwd_blocked = False
+        self._us_seen = False        # True once the firmware actually sends them
 
         # ── Connect to Arduino ──
         self._connect_arduino()
@@ -108,6 +128,8 @@ class Robot2Bridge(Node):
         self.encoder_pub = self.create_publisher(Int32MultiArray, '/encoders', 10)
         self.imu_pub = self.create_publisher(Imu, '/imu/data_raw', 10)
         self.log_pub = self.create_publisher(String, '/robot_log', 10)
+        self.us_left_pub = self.create_publisher(Range, '/ultrasonic/left', 10)
+        self.us_right_pub = self.create_publisher(Range, '/ultrasonic/right', 10)
 
         # ── Timers ──
         self.create_timer(0.1, self._check_manual_timeout)
@@ -190,6 +212,11 @@ class Robot2Bridge(Node):
             return
         deadman = self.get_parameter('deadman_timeout').value
         if time.monotonic() - self.last_twist_time <= deadman:
+            # An obstacle can appear while a forward command is HELD (the
+            # robot creeps into it) — re-check before every keepalive resend.
+            if self.last_motion == 'F' and not self._forward_clear():
+                self._send('S')
+                return
             self._send(self.last_motion)
         else:
             self.get_logger().warn('Deadman: commander silent — stopping')
@@ -304,6 +331,12 @@ class Robot2Bridge(Node):
             ax, ay, az = int(parts[5]), int(parts[6]), int(parts[7])
             gx, gy, gz = int(parts[8]), int(parts[9]), int(parts[10])
 
+            # Fields 17,18 = front ultrasonics (cm) — only present on the
+            # 2026-06-13+ firmware. Older firmware (or none flashed yet)
+            # simply lacks them, so the guard stays disarmed and reads clear.
+            if len(parts) >= 19:
+                self._update_ultrasonics(int(parts[17]), int(parts[18]))
+
             # ── Publish Encoders ──
             enc_msg = Int32MultiArray()
             enc_msg.data = encs
@@ -363,6 +396,51 @@ class Robot2Bridge(Node):
                     'carpet pivot friction, or weak battery (undervoltage?)')
             self.get_logger().warn(line)
             self.log_pub.publish(String(data=line))
+
+    def _update_ultrasonics(self, left_cm: int, right_cm: int):
+        """Store + publish the two front ranges; runs in the reader thread."""
+        self.us_left_cm = left_cm
+        self.us_right_cm = right_cm
+        self._us_seen = True
+        fov = float(self.get_parameter('us_fov_deg').value)
+        max_m = self._us_max_cm / 100.0
+        for cm, pub, frame in ((left_cm, self.us_left_pub, 'ultrasonic_left'),
+                               (right_cm, self.us_right_pub, 'ultrasonic_right')):
+            m = Range()
+            m.header.stamp = self.get_clock().now().to_msg()
+            m.header.frame_id = frame
+            m.radiation_type = Range.ULTRASOUND
+            m.field_of_view = math.radians(fov)
+            m.min_range = 0.02
+            m.max_range = max_m
+            m.range = cm / 100.0
+            pub.publish(m)
+
+    def _forward_clear(self) -> bool:
+        """Hysteretic gate: is it safe to drive FORWARD right now?
+
+        Blocks below stop_cm, re-allows only above clear_cm — so a robot
+        creeping up to the threshold doesn't stutter F/S/F. Disarmed unless
+        the firmware is actually reporting ranges (so this can't strand a
+        robot whose Mega predates the ultrasonic build)."""
+        if not (self.get_parameter('us_enabled').value and self._us_seen):
+            return True
+        nearest = min(self.us_left_cm, self.us_right_cm)
+        stop_cm = int(self.get_parameter('us_stop_cm').value)
+        clear_cm = int(self.get_parameter('us_clear_cm').value)
+        if self._fwd_blocked:
+            if nearest >= clear_cm:
+                self._fwd_blocked = False
+                self.log_pub.publish(String(
+                    data=f'OBSTACLE CLEARED: front {nearest}cm — forward re-enabled'))
+        else:
+            if nearest < stop_cm:
+                self._fwd_blocked = True
+                line = (f'OBSTACLE: front {nearest}cm < {stop_cm}cm — '
+                        'forward BLOCKED (turn or reverse to escape)')
+                self.get_logger().warn(line)
+                self.log_pub.publish(String(data=line))
+        return not self._fwd_blocked
 
     def _twist_to_cmd(self, msg: Twist) -> str:
         linear = msg.linear.x
@@ -437,6 +515,8 @@ class Robot2Bridge(Node):
         self.manual_last_time = time.time()
         self.last_twist_time = time.monotonic()
         cmd = self._twist_to_cmd(msg)
+        if cmd == 'F' and not self._forward_clear():
+            cmd = 'S'
         if cmd != self.last_motion or cmd == 'S':
             self._send(cmd)
 
@@ -451,7 +531,9 @@ class Robot2Bridge(Node):
             return
         self.last_twist_time = time.monotonic()
         cmd = self._twist_to_cmd(msg)
-        if cmd != self.last_motion:
+        if cmd == 'F' and not self._forward_clear():
+            cmd = 'S'
+        if cmd != self.last_motion or cmd == 'S':
             self._send(cmd)
 
     def _speed_cb(self, msg: Float32):

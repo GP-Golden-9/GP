@@ -20,6 +20,12 @@
 //     · D: packet gains ,pump,servo,estop (backward compatible: old
 //       bridges index only the first 11 fields)
 //     NOTE: 'W' stays the WATCHDOG toggle (v4 legacy) — pump is 'U'.
+//
+//   2026-06-13 ADDITION:
+//     · TWO front HC-SR04 ultrasonics (pins 30-33), round-robin read,
+//       median-filtered, appended to D: as ,usL,usR (cm). Beta's only
+//       real-time obstacle sense — the bridge blocks forward drive when
+//       either reads below the stop threshold (config/robot2.yaml).
 //     Servo lib claims Timer5 → PWM lost on pins 44/45/46 (unused);
 //     ENA(10)/ENB(11) PWM are on Timer2/Timer1 and unaffected.
 //
@@ -57,6 +63,16 @@
 #define RELAY_ACTIVE_LOW 1      // H/L-trigger relay: 1 = LOW switches pump ON
                                 // (check the relay's jumper before flashing!)
 #define SERVO_PIN        5      // arm servo signal
+
+// --- Front ultrasonics (2 × HC-SR04) ---------------------------------
+//  Beta's only real-time obstacle sense (no lidar). Plain GPIO on the
+//  free 30-33 block; the Mega's interrupt pins are all taken by encoders,
+//  so these are read by a round-robin, range-bounded pulseIn (one sensor
+//  per tick) — never both in one loop, which also avoids cross-talk.
+#define US_L_TRIG    30
+#define US_L_ECHO    31
+#define US_R_TRIG    32
+#define US_R_ECHO    33
 
 // --- I2C Bus (built-in on Mega: SDA=20, SCL=21) ---------------------
 #define I2C_CLOCK    400000UL
@@ -124,6 +140,12 @@
 #define SERVO_SLEW_PERIOD_MS 20UL     // 50 Hz slew ticks
 #define SERVO_SLEW_DEG_TICK  2.4f     // 120 °/s at 50 Hz
 
+// --- Ultrasonic timing / range (must match config/robot2.yaml) -------
+#define US_MAX_CM        150          // echo cap; bounds the worst-case wait
+#define US_TICK_MS       30UL         // round-robin → each sensor ≈ 16 Hz
+#define US_US_PER_CM     58UL         // HC-SR04 round-trip: ~58 µs / cm
+#define US_TIMEOUT_US    (US_MAX_CM * US_US_PER_CM)   // ~8.7 ms cap
+
 // ╔═══════════════════════════════════════════════════════════════════╗
 // ║                  5.  GLOBAL STATE                                 ║
 // ╚═══════════════════════════════════════════════════════════════════╝
@@ -177,6 +199,13 @@ Servo armServo;
 float servoCurrent = SERVO_HOME_DEG;   // slewed position
 int   servoTarget  = SERVO_HOME_DEG;
 unsigned long lastServoTick = 0;
+
+// Front ultrasonics — last median-filtered distances (cm). US_MAX_CM
+// means "clear / no echo within range" (also what a disconnected sensor
+// reads, so a loose sensor fails to 'clear', never to a phantom wall).
+int usLeftCm  = US_MAX_CM;
+int usRightCm = US_MAX_CM;
+unsigned long lastUsTick = 0;
 
 // Stream timing
 unsigned long lastStream    = 0;
@@ -549,6 +578,51 @@ void servoSlewTick() {
 }
 
 // ╔═══════════════════════════════════════════════════════════════════╗
+// ║                 11c. FRONT ULTRASONICS (2 × HC-SR04)             ║
+// ╚═══════════════════════════════════════════════════════════════════╝
+
+static inline int median3(int a, int b, int c) {
+    return max(min(a, b), min(max(a, b), c));   // middle of three
+}
+
+// One bounded, blocking read. No echo within US_MAX_CM → returns US_MAX_CM
+// (treated as "clear"). The timeout caps the worst-case block at ~8.7 ms.
+int usReadCm(uint8_t trig, uint8_t echo) {
+    digitalWrite(trig, LOW);  delayMicroseconds(2);
+    digitalWrite(trig, HIGH); delayMicroseconds(10);
+    digitalWrite(trig, LOW);
+    unsigned long dur = pulseIn(echo, HIGH, US_TIMEOUT_US);
+    if (dur == 0) return US_MAX_CM;             // timed out → clear
+    int cm = (int)(dur / US_US_PER_CM);
+    return constrain(cm, 1, US_MAX_CM);
+}
+
+// Round-robin: one sensor per US_TICK_MS so the two never fire together
+// (no cross-talk) and only one ~8.7 ms read can land in any single loop.
+// A 3-deep median per side rejects HC-SR04 single-sample fliers.
+void ultrasonicTick() {
+    unsigned long now = millis();
+    if (now - lastUsTick < US_TICK_MS) return;
+    lastUsTick = now;
+
+    static int lbuf[3] = {US_MAX_CM, US_MAX_CM, US_MAX_CM};
+    static int rbuf[3] = {US_MAX_CM, US_MAX_CM, US_MAX_CM};
+    static uint8_t li = 0, ri = 0;
+    static bool readLeft = true;
+
+    if (readLeft) {
+        lbuf[li] = usReadCm(US_L_TRIG, US_L_ECHO);
+        li = (li + 1) % 3;
+        usLeftCm = median3(lbuf[0], lbuf[1], lbuf[2]);
+    } else {
+        rbuf[ri] = usReadCm(US_R_TRIG, US_R_ECHO);
+        ri = (ri + 1) % 3;
+        usRightCm = median3(rbuf[0], rbuf[1], rbuf[2]);
+    }
+    readLeft = !readLeft;
+}
+
+// ╔═══════════════════════════════════════════════════════════════════╗
 // ║                 12.  COMMAND PARSER                               ║
 // ╚═══════════════════════════════════════════════════════════════════╝
 
@@ -598,6 +672,7 @@ void printStatus() {
     Serial.print(F(", ")); Serial.println(gzOff);
     Serial.print(F(" Encoders FL,RL : ")); Serial.print(enc[0]); Serial.print(F(", ")); Serial.println(enc[1]);
     Serial.print(F(" Encoders FR,RR : ")); Serial.print(enc[2]); Serial.print(F(", ")); Serial.println(enc[3]);
+    Serial.print(F(" Ultrasonic L,R : ")); Serial.print(usLeftCm); Serial.print(F(", ")); Serial.print(usRightCm); Serial.println(F(" cm"));
     Serial.print(F(" Accel  (raw)   : ")); Serial.print(ax); Serial.print(','); Serial.print(ay); Serial.print(','); Serial.println(az);
     Serial.print(F(" Gyro   (raw)   : ")); Serial.print(gx); Serial.print(','); Serial.print(gy); Serial.print(','); Serial.println(gz);
     Serial.print(F(" Mag    (raw)   : ")); Serial.print(mx); Serial.print(','); Serial.print(my); Serial.print(','); Serial.println(mz);
@@ -750,7 +825,8 @@ void processLine(String input) {
 // ╚═══════════════════════════════════════════════════════════════════╝
 //
 //  HIGH-RATE PACKET  (50 Hz):
-//    D:ts,e1,e2,e3,e4,ax,ay,az,gx,gy,gz,mx,my,mz
+//    D:ts,e1,e2,e3,e4,ax,ay,az,gx,gy,gz,mx,my,mz,pump,servo,estop,usL,usR
+//    (usL/usR = front ultrasonic distances in cm; 150 = clear/no echo)
 //
 //  LOW-RATE PACKET   (10 Hz):
 //    B:ts,pressure_pa,temp_deci_c
@@ -763,9 +839,9 @@ void streamHighRate() {
     long e0 = enc[0], e1 = enc[1], e2 = enc[2], e3 = enc[3];
     interrupts();
 
-    char buf[176];
+    char buf[200];
     snprintf(buf, sizeof(buf),
-        "D:%lu,%ld,%ld,%ld,%ld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+        "D:%lu,%ld,%ld,%ld,%ld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
         millis(),
         e0, e1, e2, e3,
         ax, ay, az,
@@ -773,7 +849,9 @@ void streamHighRate() {
         mx, my, mz,
         pumpOn ? 1 : 0,
         (int)servoCurrent,
-        estopActive ? 1 : 0);
+        estopActive ? 1 : 0,
+        usLeftCm,            // field 17
+        usRightCm);          // field 18
     Serial.println(buf);
     streamCount++;
 }
@@ -862,6 +940,13 @@ void setup() {
     armServo.write(SERVO_HOME_DEG);
     servoCurrent = servoTarget = SERVO_HOME_DEG;
     Serial.println(F("[INIT] Arm servo            : OK (home 90°)"));
+
+    // --- Front ultrasonics ---
+    pinMode(US_L_TRIG, OUTPUT); digitalWrite(US_L_TRIG, LOW);
+    pinMode(US_R_TRIG, OUTPUT); digitalWrite(US_R_TRIG, LOW);
+    pinMode(US_L_ECHO, INPUT);
+    pinMode(US_R_ECHO, INPUT);
+    Serial.println(F("[INIT] Front ultrasonics(2) : OK"));
 
     // --- Encoder pins & interrupts ---
     const uint8_t encA[] = {M1_ENCA, M2_ENCA, M3_ENCA, M4_ENCA};
@@ -959,6 +1044,9 @@ void loop() {
     // ---- 4b. Intervention tool safety (v5) ----
     pumpSafetyTick();
     servoSlewTick();
+
+    // ---- 4c. Front obstacle ranging (round-robin, non-overlapping) ----
+    ultrasonicTick();
 
     // ---- 5. Stream high-rate sensor packet ----
     unsigned long now = millis();

@@ -87,6 +87,28 @@ goto:
   kp_distance: 0.5
   kp_angle: 1.2
 
+# Two forward-facing HC-SR04 ultrasonics (added 2026-06-13). Beta has no
+# lidar, so these are its only real-time obstacle sense — they back-stop
+# both manual driving and goto navigation against driving into a wall.
+# Firmware reads them round-robin (pins below), median-filters, and appends
+# them to the D: packet; the bridge publishes /ultrasonic/{left,right} and
+# blocks forward motion under stop_cm; goto slows under slow_cm.
+ultrasonic:
+  enabled: true
+  max_cm: 150          # firmware echo cap = bounds the blocking echo wait (~8.7 ms)
+  stop_cm: 25          # forward HARD-STOP threshold (manual + auto)
+  clear_cm: 40         # hysteresis: forward re-enabled only above this
+  slow_cm: 60          # goto begins proportional slow-down here
+  fov_deg: 15          # HC-SR04 beam width (for the Range message)
+  # Mount offsets from base_link center (+x forward, +y left), for the
+  # Range frame_ids and future map fusion. Sensors sit at the front edge.
+  left_x_m:  0.15
+  left_y_m:  0.07
+  right_x_m: 0.15
+  right_y_m: -0.07
+  # Firmware pins (Mega) — documented here, defined in the .ino:
+  #   LEFT  TRIG=30 ECHO=31    RIGHT TRIG=32 ECHO=33
+
 accessories:
   pump:
     pin: 7               # firmware v5

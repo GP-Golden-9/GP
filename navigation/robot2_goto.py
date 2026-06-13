@@ -24,6 +24,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist, PoseStamped
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Range
 from std_msgs.msg import String
 
 
@@ -52,6 +53,15 @@ STUCK_TIMEOUT_S   = 8.0      # seconds without progress → abandon the goal
 PROGRESS_DIST_M   = 0.03     # closing on the goal by this much = progress
 PROGRESS_ANG_RAD  = 0.10     # rotating toward it by this much = progress
 
+# Front-ultrasonic gate (mirrors config/robot2.yaml ultrasonic.*). These
+# make navigation GRACEFUL — slow down approaching an obstacle, hold short
+# of it. The bridge enforces the hard forward-stop independently, so even
+# if these constants drift the robot still can't drive into a wall.
+US_STOP_M   = 0.25           # hold this far short of an obstacle
+US_CLEAR_M  = 0.40           # hysteresis: resume only once this clear
+US_SLOW_M   = 0.60           # begin proportional slow-down here
+US_RANGE_M  = 1.50           # sensor cap = "clear" sentinel
+
 # Navigation states
 STATE_IDLE      = 'IDLE'
 STATE_ROTATING  = 'ROTATING'
@@ -70,6 +80,10 @@ class Robot2GoTo(Node):
             Odometry, '/odom', self._odom_cb, 10)
         self.create_subscription(
             Twist, '/manual_cmd', self._manual_cb, 10)
+        self.create_subscription(
+            Range, '/ultrasonic/left', self._us_left_cb, 10)
+        self.create_subscription(
+            Range, '/ultrasonic/right', self._us_right_cb, 10)
 
         # ── Publishers ──
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
@@ -89,6 +103,14 @@ class Robot2GoTo(Node):
         self._best_dist = None
         self._best_ang = None
         self._last_progress = 0.0
+
+        # Front ultrasonics (metres; large = clear). _us_seen stays False
+        # until ranges actually arrive, so navigation is never gated by a
+        # robot whose firmware predates the sensors.
+        self.us_left_m = US_RANGE_M
+        self.us_right_m = US_RANGE_M
+        self._us_seen = False
+        self._us_blocked = False
 
         # ── Control loop at 20 Hz ──
         self.create_timer(0.05, self._navigate)
@@ -135,6 +157,36 @@ class Robot2GoTo(Node):
         if self.has_goal:
             self.get_logger().info('🛑 Manual override! Cancelling goal.')
             self.cancel_goal()
+
+    def _us_left_cb(self, msg: Range):
+        self.us_left_m = msg.range
+        self._us_seen = True
+
+    def _us_right_cb(self, msg: Range):
+        self.us_right_m = msg.range
+        self._us_seen = True
+
+    def _forward_scale(self) -> float:
+        """Speed multiplier for forward motion from the front ultrasonics.
+
+        1.0 = clear, 0.0 = hold (obstacle within stop range). Proportional
+        between slow and stop. Hysteretic so it doesn't stutter at the edge.
+        Returns 1.0 when no sensor data has arrived (gate disarmed)."""
+        if not self._us_seen:
+            return 1.0
+        front = min(self.us_left_m, self.us_right_m)
+        if self._us_blocked:
+            if front >= US_CLEAR_M:
+                self._us_blocked = False
+            else:
+                return 0.0
+        elif front < US_STOP_M:
+            self._us_blocked = True
+            return 0.0
+        if front >= US_SLOW_M:
+            return 1.0
+        # linear ramp from 0 at stop to 1 at slow
+        return max(0.0, min(1.0, (front - US_STOP_M) / (US_SLOW_M - US_STOP_M)))
 
     # ─────────────────────────────────────
     # NAVIGATION LOOP
@@ -208,6 +260,15 @@ class Robot2GoTo(Node):
         # Linear speed proportional to distance, clamped
         linear = min(MAX_LINEAR_SPEED, KP_DISTANCE * distance)
 
+        # Front-obstacle gate: scale (or zero) forward speed. Steering is
+        # left untouched so the robot can still rotate away from the wall.
+        scale = self._forward_scale()
+        linear *= scale
+        if scale == 0.0:
+            self._publish_status_raw(f'BLOCKED:{min(self.us_left_m, self.us_right_m):.2f}m')
+        else:
+            self._publish_status(STATE_DRIVING)
+
         # Small angular correction while driving to stay on course
         angular = max(-MAX_ANGULAR_SPEED * 0.5,
                       min(MAX_ANGULAR_SPEED * 0.5,
@@ -216,7 +277,6 @@ class Robot2GoTo(Node):
         cmd.linear.x = linear
         cmd.angular.z = angular
         self.cmd_pub.publish(cmd)
-        self._publish_status(STATE_DRIVING)
 
     # ─────────────────────────────────────
     # STATUS PUBLISHING
@@ -237,6 +297,10 @@ class Robot2GoTo(Node):
         else:
             msg.data = 'IDLE'
         self.status_pub.publish(msg)
+
+    def _publish_status_raw(self, text: str):
+        """Publish an arbitrary nav-status string (e.g. BLOCKED:0.22m)."""
+        self.status_pub.publish(String(data=text))
 
     def cancel_goal(self):
         """Stop the robot and cancel current goal."""

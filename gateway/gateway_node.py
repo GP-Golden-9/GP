@@ -32,7 +32,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
-from sensor_msgs.msg import Imu, LaserScan
+from sensor_msgs.msg import Imu, LaserScan, Range
 from std_msgs.msg import Bool, Float32, Int32MultiArray, String
 
 from tf2_ros import TransformException
@@ -86,6 +86,7 @@ class GatewayNode(Node):
             'pump': None, 'servo_deg': None, 'estop': False,
             'nav_status': 'IDLE', 'motor_status': '',
             'accessory': '',
+            'us': None,        # {'l': metres, 'r': metres} front ultrasonics
         }
         self._last_scan_fwd = 0.0
         self._last_map_fwd = 0.0
@@ -104,6 +105,8 @@ class GatewayNode(Node):
         sub(Imu, '/imu/data_raw', self._imu_cb, 20)
         sub(Odometry, '/odom', self._odom_cb, 20)
         sub(LaserScan, '/scan', self._scan_cb, 5)
+        sub(Range, '/ultrasonic/left', self._us_left_cb, 10)
+        sub(Range, '/ultrasonic/right', self._us_right_cb, 10)
         sub(OccupancyGrid, '/map', self._map_cb, 1)
         sub(String, '/motor_status', self._motor_status_cb, 5)
         sub(String, '/nav_status', self._nav_status_cb, 5)
@@ -223,6 +226,16 @@ class GatewayNode(Node):
             'enc': 'zlib',
             'data': zlib.compress(grid, level=3),
         })
+
+    def _us_left_cb(self, msg: Range):
+        us = self.state.get('us') or {'l': None, 'r': None}
+        us['l'] = round(msg.range, 3)
+        self.state['us'] = us
+
+    def _us_right_cb(self, msg: Range):
+        us = self.state.get('us') or {'l': None, 'r': None}
+        us['r'] = round(msg.range, 3)
+        self.state['us'] = us
 
     def _motor_status_cb(self, msg: String):
         self.state['motor_status'] = msg.data
