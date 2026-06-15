@@ -2,7 +2,10 @@
 Description=GP Robot1 ROS stack (lidar + slam + bridge + explorer + gateway)
 Requires=gp-preflight.service
 Wants=gp-discovery.service
-After=gp-preflight.service gp-discovery.service network-online.target
+# No network-online.target: the stack is localhost-only (DDS on loopback,
+# lidar/serial local) and the gateway's ZMQ sockets bind before WiFi is up.
+# Ordering after network-online added ~3 min of dead boot wait on flaky WiFi.
+After=gp-preflight.service gp-discovery.service
 
 [Service]
 Type=simple

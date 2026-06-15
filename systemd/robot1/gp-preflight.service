@@ -1,7 +1,10 @@
 [Unit]
 Description=GP Robot1 preflight checks (serial names, disk, power, deps)
-After=network-online.target
-Wants=network-online.target
+# Deliberately NOT gated on network-online.target — the checks need no
+# network, and gp-robot1 Requires= this unit, so any wait here delays the
+# whole stack. network-online's ~120 s wait-online timeout on a slow-WiFi
+# boot was pushing startup to ~3 min for a localhost-only DDS stack. Do
+# NOT re-add network-online here.
 
 [Service]
 Type=oneshot

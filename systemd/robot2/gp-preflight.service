@@ -1,7 +1,11 @@
 [Unit]
 Description=GP Robot2 preflight checks (serial name, camera, disk, power, deps)
-After=network-online.target
-Wants=network-online.target
+# Deliberately NOT gated on network-online.target. The preflight checks USB
+# (/dev/mega, camera), disk, power and ROS deps — none need the network. And
+# because gp-robot2 Requires= this unit, any wait here delays the WHOLE stack.
+# Waiting on network-online dragged startup out to ~3 min on a slow-WiFi boot
+# (NetworkManager-wait-online's ~120 s timeout) — for a localhost-only DDS
+# stack that needs no network to run. Do NOT re-add network-online here.
 
 [Service]
 Type=oneshot
