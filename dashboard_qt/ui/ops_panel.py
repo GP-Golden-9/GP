@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-                               QPushButton, QSlider, QVBoxLayout, QWidget)
+                               QProgressBar, QPushButton, QSlider, QVBoxLayout,
+                               QWidget)
 
 from ui import theme
 from ui.joystick import Joystick
@@ -133,6 +134,22 @@ class OpsPanel(QWidget):
         tl.addWidget(self.servo_lbl, 1, 2)
         root.addWidget(self.tools_box)
 
+        # ── gas level (robot3 inspector) ──
+        self.gas_box = QGroupBox('GAS LEVEL · INSPECTOR')
+        gv = QVBoxLayout(self.gas_box)
+        self.gas_bar = QProgressBar()
+        self.gas_bar.setRange(0, 4095)          # ESP32 raw ADC range
+        self.gas_bar.setTextVisible(False)
+        self.gas_bar.setMinimumHeight(24)
+        gv.addWidget(self.gas_bar)
+        self.gas_val_lbl = QLabel('—')
+        self.gas_val_lbl.setStyleSheet(f'font-family:{theme.MONO}; '
+                                       'font-weight:700; font-size:13px;')
+        self.gas_val_lbl.setAlignment(Qt.AlignCenter)
+        gv.addWidget(self.gas_val_lbl)
+        root.addWidget(self.gas_box)
+        self.gas_box.setVisible(False)
+
         root.addStretch(1)
 
         # ── E-STOP ──
@@ -144,9 +161,30 @@ class OpsPanel(QWidget):
         root.addWidget(self.estop_btn)
 
     # ── public API ────────────────────────────────────────────────────────
-    def set_target(self, name: str, robot_id: str, has_tools: bool) -> None:
+    def set_target(self, name: str, robot_id: str, has_tools: bool,
+                   has_gas: bool = False) -> None:
         self.target_lbl.setText(f'{name} · {robot_id}')
         self.tools_box.setVisible(has_tools)
+        self.gas_box.setVisible(has_gas)
+
+    def set_gas(self, value: int, alarm: bool, warn_at: int = 2000,
+                alarm_at: int = 3000) -> None:
+        """Update the gas gauge: green normal, amber elevated, red alarm."""
+        self.gas_bar.setValue(max(0, min(int(value), 4095)))
+        if alarm or value >= alarm_at:
+            color, status = theme.BAD, 'ALARM'
+        elif value >= warn_at:
+            color, status = theme.WARN, 'elevated'
+        else:
+            color, status = theme.GOOD, 'normal'
+        self.gas_bar.setStyleSheet(
+            f'QProgressBar{{border:1px solid {theme.BORDER};border-radius:4px;'
+            f'background:#111;}} '
+            f'QProgressBar::chunk{{background:{color};border-radius:3px;}}')
+        self.gas_val_lbl.setText(f'{value}  ·  {status}')
+        self.gas_val_lbl.setStyleSheet(
+            f'color:{color}; font-family:{theme.MONO}; '
+            'font-weight:700; font-size:13px;')
 
     def set_estop(self, engage: bool) -> None:
         if engage == self._estop:

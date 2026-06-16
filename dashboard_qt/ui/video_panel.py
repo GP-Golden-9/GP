@@ -11,6 +11,13 @@ from PySide6.QtWidgets import QWidget
 from ui import theme
 
 STALE_BANNER_AFTER_S = 2.5
+DETECT_HOLD_S = 1.0          # boxes vanish if inference stops feeding them
+
+_BOX_COLOR = {
+    'person': theme.MARKER_HUMAN, 'dog': theme.MARKER_DOG,
+    'cat': theme.MARKER_CAT, 'fire': theme.MARKER_FIRE,
+    'flame': theme.MARKER_FIRE, 'smoke': theme.MARKER_FIRE,
+}
 
 
 class VideoPanel(QWidget):
@@ -26,6 +33,8 @@ class VideoPanel(QWidget):
         self._robot = ''
         self._detect_text = ''
         self._detect_until = 0.0
+        self._detections: list = []        # latest YOLO boxes (normalized)
+        self._detections_at = 0.0
 
         t = QTimer(self)
         t.setInterval(500)
@@ -36,6 +45,14 @@ class VideoPanel(QWidget):
         self._robot = robot_id
         self._pixmap = None
         self._last_frame_local = 0.0
+        self._detections = []
+        self.update()
+
+    def set_detections(self, detections) -> None:
+        """Latest YOLO boxes (normalized cx/cy/w/h), drawn as a vector
+        overlay over the live raw frame — decoupled from video latency."""
+        self._detections = list(detections or ())
+        self._detections_at = time.monotonic()
         self.update()
 
     def show_jpeg(self, jpeg: bytes, frame_age_s: float | None = None) -> None:
@@ -74,6 +91,7 @@ class VideoPanel(QWidget):
             x = (self.width() - scaled.width()) // 2
             y = (self.height() - scaled.height()) // 2
             p.drawPixmap(x, y, scaled)
+            self._draw_boxes(p, x, y, scaled.width(), scaled.height())
 
         p.setFont(QFont('Consolas', 8, QFont.Bold))
         since = (time.monotonic() - self._last_frame_local
@@ -97,6 +115,33 @@ class VideoPanel(QWidget):
             self._pill(p, 8, self.height() - 34, self._detect_text,
                        QColor(theme.MARKER_FIRE))
         p.end()
+
+    def _draw_boxes(self, p, ox, oy, vw, vh) -> None:
+        if (not self._detections
+                or time.monotonic() - self._detections_at > DETECT_HOLD_S):
+            return
+        p.save()
+        p.setFont(QFont('Consolas', 8, QFont.Bold))
+        for d in self._detections:
+            try:
+                cx, cy, w, h = (float(d['cx']), float(d['cy']),
+                                float(d['w']), float(d['h']))
+            except (KeyError, TypeError, ValueError):
+                continue
+            bx = ox + (cx - w / 2) * vw
+            by = oy + (cy - h / 2) * vh
+            bw, bh = w * vw, h * vh
+            label = str(d.get('label', ''))
+            col = QColor(_BOX_COLOR.get(label.lower(), theme.GOOD))
+            p.setPen(col)
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(int(bx), int(by), int(bw), int(bh))
+            tag = f"{label} {float(d.get('conf', 0.0)) * 100:.0f}%"
+            tw = p.fontMetrics().horizontalAdvance(tag) + 8
+            p.fillRect(int(bx), int(by) - 16, tw, 15, QColor(8, 11, 18, 210))
+            p.setPen(col)
+            p.drawText(int(bx) + 4, int(by) - 4, tag)
+        p.restore()
 
     def _pill(self, p, x, y, text, dot: QColor) -> None:
         fm = p.fontMetrics()

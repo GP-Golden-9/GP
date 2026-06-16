@@ -97,7 +97,7 @@ class RobotLink(QObject):
             while not self._stop.is_set():
                 events = dict(poller.poll(timeout=100))
                 if tele in events:
-                    self._emit_envelope(tele.recv(zmq.NOBLOCK))
+                    self._drain_telemetry(tele)
                 if mapc in events:
                     self._emit_envelope(mapc.recv(zmq.NOBLOCK))
                 if health in events:
@@ -114,6 +114,40 @@ class RobotLink(QObject):
             for s in (tele, mapc, health, video, legacy):
                 if s is not None:
                     s.close(0)
+
+    def _drain_telemetry(self, sock: zmq.Socket) -> None:
+        """Coalesce a burst of telemetry down to the NEWEST pose.
+
+        Beta's WiFi stalls then floods: a 200-400 ms gap is followed by a
+        burst of back-to-back tele.full frames (measured: 13 stalls/10 s,
+        ~124 msgs per burst). Emitting every frame replays a backlog of
+        STALE poses, so the map trails real motion and only "catches up"
+        after each stall. Instead, drain everything the socket has buffered
+        right now and emit only the latest tele.full — latest pose wins, map
+        latency is bounded to one render regardless of how badly the radio
+        bursts. Every OTHER type on this channel (tele.scan for the lidar
+        robot, log.event) is still emitted in order so nothing else drops.
+        Telemetry can't use ZMQ CONFLATE because this one socket carries
+        multiple message types — conflate would clobber a scan with a pose.
+        """
+        latest_full: bytes | None = None
+        while True:
+            try:
+                raw = sock.recv(zmq.NOBLOCK)
+            except zmq.Again:
+                break
+            try:
+                env = decode(raw)
+            except ProtocolError:
+                continue
+            if env.type == ch.TELE_FULL:
+                latest_full = raw            # keep newest, drop stale poses
+            elif env.type == ch.TELE_SCAN:
+                self.scanReceived.emit(env)
+            else:                            # log.event, future types
+                self.healthReceived.emit(env)
+        if latest_full is not None:
+            self._emit_envelope(latest_full)
 
     def _emit_envelope(self, raw: bytes) -> None:
         try:

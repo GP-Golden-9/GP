@@ -38,7 +38,8 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QComboBox,
                                QDockWidget, QLabel, QLineEdit, QMainWindow,
                                QMessageBox, QPlainTextEdit, QTextEdit, QWidget)
 
-from alerts import AlertManager, AlertState
+from alerts import AlertManager
+from speech import Speaker
 from gpcore.protocol import commands as cmds
 from state.store import RobotState
 from transport.esp32_link import Esp32Link
@@ -50,9 +51,9 @@ from ui.command_bar import CommandBar
 from ui.fleet_panel import FleetPanel
 from ui.map.map_widget import MapWidget
 from ui.map.planner import plan_path
-from ui.map.projection import (FrameOffset, Pose, apply_offset,
-                               detection_to_world, offset_from_alignment,
-                               world_point_to_robot)
+from ui.map.projection import (DIST_K, DIST_K_BY_KIND, FrameOffset, Pose,
+                               apply_offset, detection_to_world,
+                               offset_from_alignment, world_point_to_robot)
 from ui.mission import MissionExecutor
 from ui.ops_panel import OpsPanel
 from ui.video_panel import VideoPanel
@@ -64,6 +65,17 @@ KEY_VECTORS = {                       # key → (turn, fwd) contribution
     Qt.Key_D: (+1, 0), Qt.Key_Right: (+1, 0),
 }
 FIRE_LABELS = ('fire', 'smoke', 'flame')
+
+# Detection label (lower-case) → map-marker kind, and → the per-class
+# confidence key in prefs.detect_conf. fire/smoke/flame all map to the
+# single FIRE marker + 'fire' threshold.
+DETECT_KIND = {'person': 'HUMAN', 'dog': 'DOG', 'cat': 'CAT',
+               'fire': 'FIRE', 'smoke': 'FIRE', 'flame': 'FIRE'}
+DETECT_CONF_KEY = {'person': 'person', 'dog': 'dog', 'cat': 'cat',
+                   'fire': 'fire', 'smoke': 'fire', 'flame': 'fire'}
+# Spoken phrase per marker kind (Windows SAPI). HUMAN reads as "human".
+DETECT_SPEECH = {'HUMAN': 'human detected', 'FIRE': 'fire detected',
+                 'DOG': 'dog detected', 'CAT': 'cat detected'}
 
 
 class MainWindow(QMainWindow):
@@ -79,7 +91,10 @@ class MainWindow(QMainWindow):
         self._link_state: dict[str, bool | None] = {}
         self._keys: set[int] = set()
         self._last_sb = 0.0
-        self._last_fire_marker = 0.0
+        self._last_marker: dict[str, float] = {}   # kind -> last projection t
+        # Spoken detection announcements (Windows SAPI; no-op if unavailable).
+        # 4 s per-kind cooldown so a target in view isn't announced every frame.
+        self.speaker = Speaker(cooldown_s=4.0)
         self._hfov = 62.0      # camera horizontal FOV for detection projection
         self._grid: np.ndarray | None = None      # latest occupancy (for A*)
         self._grid_meta: tuple | None = None      # (res, ox, oy)
@@ -107,6 +122,13 @@ class MainWindow(QMainWindow):
         self.state: dict[str, RobotState] = {}
         for prof in self.app_cfg.robots:
             st = RobotState(prof.id, parent=self)
+            # Wheel-encoder robots (Beta) compute their pose on the LAPTOP from
+            # the raw enc+gyro in telemetry — odom was moved off the Pi to free
+            # a core so the map tracks live. SLAM robots (Alpha, no encoders)
+            # keep their map-frame pose from the gateway.
+            if prof.drive.get('ticks_per_rev'):
+                from state.local_odom import LocalOdom
+                st.local_odom = LocalOdom(prof.drive)
             self.state[prof.id] = st
             self._offsets[prof.id] = FrameOffset()
             # robot1's SLAM frame IS the shared frame — aligned by definition
@@ -269,6 +291,15 @@ class MainWindow(QMainWindow):
         clear = QAction('Clear map markers', self)
         clear.triggered.connect(self.map.clear_markers)
         tools.addAction(clear)
+        tools.addSeparator()
+        muted = self._settings().value('mute_voice', False, type=bool)
+        self.act_mute = QAction('Mute voice announcements', self)
+        self.act_mute.setCheckable(True)
+        self.act_mute.setShortcut('Ctrl+M')
+        self.act_mute.setChecked(muted)
+        self.speaker.set_muted(muted)
+        self.act_mute.toggled.connect(self._on_mute_toggled)
+        tools.addAction(self.act_mute)
 
     def _wire_alerts(self) -> None:
         self.alerts = AlertManager(
@@ -475,7 +506,8 @@ class MainWindow(QMainWindow):
     def _update_ops_target(self) -> None:
         prof = self.app_cfg.profile(self.active_id)
         self.ops.set_target(prof.name, prof.id,
-                            has_tools=(prof.id == 'robot2'))
+                            has_tools=(prof.id == 'robot2'),
+                            has_gas=prof.is_esp32)
 
     def _switch_model(self, path: str) -> None:
         if self.yolo is not None:
@@ -558,6 +590,10 @@ class MainWindow(QMainWindow):
             text = f'gas {gas}' + (' ALARM' if alarm else '') + \
                    (f' · {rssi} dBm' if rssi is not None else '')
             card.set_vitals(text, warn=alarm or (gas >= warn_at))
+        # live gas gauge in the ops panel when this inspector is active
+        if robot_id == self.active_id and gas is not None:
+            alarm_at = (profile.gas or {}).get('alarm_threshold', 3000)
+            self.ops.set_gas(int(gas), alarm, warn_at, alarm_at)
         # mirror into the diagnostics vitals strip (health-channel shape)
         self.drawer.diagnostics.update_vitals(robot_id, {
             'sys': {'rssi_dbm': esp.get('rssi'), 'temp_c': None,
@@ -638,10 +674,12 @@ class MainWindow(QMainWindow):
         if len(self._frame_caps) > 64:
             for k in sorted(self._frame_caps)[:-32]:
                 self._frame_caps.pop(k, None)
+        # Show the RAW frame immediately (network-latency only). When AI is
+        # up we ALSO submit it for detection; the boxes arrive a beat later
+        # as a vector overlay (_on_annotated) and never gate the video.
+        self.video.show_jpeg(jpeg, st.video_frame_age_s(cap))
         if self.yolo is not None and self.yolo.available:
             self.yolo.submit_frame(fid, jpeg)
-        else:
-            self.video.show_jpeg(jpeg, st.video_frame_age_s(cap))
 
     def _on_legacy_video(self, robot_id: str, jpeg: bytes) -> None:
         if robot_id != self.active_id:
@@ -654,44 +692,56 @@ class MainWindow(QMainWindow):
             self.video.show_jpeg(jpeg, None)
 
     def _on_annotated(self, frame_id: int, jpeg: bytes, detections) -> None:
-        st = self.state.get(self.active_id)
-        cap = self._frame_caps.get(frame_id)
-        age = st.video_frame_age_s(cap) if (st and cap) else None
-        self.video.show_jpeg(jpeg, age)
+        # jpeg is intentionally empty now — the raw frame is already on screen
+        # (see _on_video). We only push the detection boxes as an overlay, so
+        # inference latency never delays the video itself.
+        self.video.set_detections(detections)
 
         pairs = [(d.get('label', ''), float(d.get('conf', 0.0)))
                  for d in detections or ()]
+        # FIRE still drives the audible/banner alarm on its own (debounced)
+        # threshold — independent of the map-marker floor below.
         self.alerts.process_fire_detections(self.active_id, pairs)
 
-        # Project fire onto the shared map — ONLY while the (debounced) FIRE
-        # alert is live, at most 2×/s, best detection of the frame. One fire
-        # event = one marker; the map merges + smooths repeats.
-        if self.alerts.state('FIRE') is AlertState.CLEAR:
-            return
-        now = time.monotonic()
-        if now - self._last_fire_marker < 0.5:
-            return
+        # Project wanted detections (person/dog/cat/fire) onto the shared
+        # map: best-of-frame per kind, each gated by its per-class confidence
+        # floor and rate-limited to 2x/s so one sighting = one marker (the
+        # map merges + smooths repeats within MARKER_MERGE_M).
         pose = self._aligned_pose(self.active_id)
         if pose is None:
             return
-        best = None
+        now = time.monotonic()
+        best: dict[str, tuple] = {}            # kind -> (conf, cx, h)
         for d in detections or ():
             label = str(d.get('label', '')).strip().lower()
+            kind = DETECT_KIND.get(label)
+            if kind is None:
+                continue
             conf = float(d.get('conf', 0.0))
-            if label in FIRE_LABELS and conf >= self.app_cfg.prefs.fire_conf_min:
-                if best is None or conf > best[1]:
-                    best = (d, conf)
-        if best is None:
-            return
-        self._last_fire_marker = now
-        d, conf = best
-        x, y = detection_to_world(pose, float(d.get('cx', 0.5)),
-                                  float(d.get('h', 0.3)), self._hfov)
-        self.map.add_marker('FIRE', x, y, conf=round(conf * 100),
-                            robot=self.active_id,
-                            t_wall=time.strftime('%H:%M:%S'))
-        self.video.flash_detection(
-            f'fire {conf * 100:.0f}% → map ({x:+.1f}, {y:+.1f})')
+            if conf < self._detect_conf_for(label):
+                continue
+            if kind not in best or conf > best[kind][0]:
+                best[kind] = (conf, float(d.get('cx', 0.5)),
+                              float(d.get('h', 0.3)))
+        for kind, (conf, cx, h) in best.items():
+            if now - self._last_marker.get(kind, 0.0) < 0.5:
+                continue
+            self._last_marker[kind] = now
+            x, y = detection_to_world(pose, cx, h, self._hfov,
+                                      DIST_K_BY_KIND.get(kind, DIST_K))
+            self.map.add_marker(kind, x, y, conf=round(conf * 100),
+                                robot=self.active_id,
+                                t_wall=time.strftime('%H:%M:%S'))
+            self.video.flash_detection(
+                f'{kind.lower()} {conf * 100:.0f}% -> map ({x:+.1f}, {y:+.1f})')
+            phrase = DETECT_SPEECH.get(kind)
+            if phrase:
+                self.speaker.announce(kind, phrase)
+
+    def _detect_conf_for(self, label: str) -> float:
+        """Per-class map-marker confidence floor from prefs.detect_conf."""
+        key = DETECT_CONF_KEY.get(label, label)
+        return float(self.app_cfg.prefs.detect_conf.get(key, 0.5))
 
     def _on_ai_state(self, on: bool, reason: str) -> None:
         self.video.set_ai_state(on, reason)
@@ -786,6 +836,11 @@ class MainWindow(QMainWindow):
     # ══════════════════════════════════════════════════════════════════════
     # Layout persistence & lifecycle
     # ══════════════════════════════════════════════════════════════════════
+    def _on_mute_toggled(self, checked: bool) -> None:
+        self.speaker.set_muted(checked)
+        self._settings().setValue('mute_voice', checked)
+        self._log('voice announcements ' + ('MUTED' if checked else 'on'))
+
     def _settings(self) -> QSettings:
         return QSettings('GP', 'OperationsCenter')
 
@@ -828,4 +883,5 @@ class MainWindow(QMainWindow):
                 pass
         if self.yolo is not None:
             self.yolo.stop()
+        self.speaker.stop()
         event.accept()

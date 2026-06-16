@@ -87,10 +87,16 @@ def main() -> int:
 
     yolo = None
     if not args.no_ai:
-        model_path = os.path.join(cfg.prefs.models_dir, cfg.prefs.default_model)
+        model_path = cfg.prefs.model_path
         if os.path.isfile(model_path):
             from inference.yolo_worker import YoloManager
-            yolo = YoloManager(model_path)
+            yolo = YoloManager(model_path,
+                               classes=cfg.prefs.detect_classes,
+                               conf=cfg.prefs.detect_conf_base,
+                               imgsz=cfg.prefs.detect_imgsz,
+                               augment=cfg.prefs.detect_augment,
+                               fire_model_path=cfg.prefs.fire_model_path,
+                               fire_prop=cfg.prefs.detect_fire_prop)
             yolo.start()
         else:
             log.warning('default model missing — AI OFF',

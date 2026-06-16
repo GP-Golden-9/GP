@@ -69,6 +69,10 @@ class RobotState(QObject):
         self.health: dict = {}
         self.estop = False
         self.run_id_seen = ''
+        # Laptop-side odometry (set by the UI for wheel-encoder robots). When
+        # present, the pose is reconstructed here from the raw enc+gyro in the
+        # telemetry instead of being computed on the Pi — see local_odom.py.
+        self.local_odom = None
         # capture-clock offset: min(recv_local − cap_t_mono) over recent frames
         self._video_offset: Optional[float] = None
 
@@ -81,13 +85,24 @@ class RobotState(QObject):
     # ── transport feed (queued-connection slots) ──────────────────────────
     def on_telemetry(self, env) -> None:
         self.streams['telemetry'].touch(env.seq)
-        self.telemetry = env.payload
+        payload = env.payload
+        # Reconstruct the pose on the laptop from raw enc+gyro (odom moved off
+        # the Pi). Reset when the robot restarts (new run_id → fresh origin).
+        if self.local_odom is not None and payload.get('enc') is not None:
+            if env.run_id and env.run_id != self.run_id_seen:
+                self.local_odom.reset()
+            pose = self.local_odom.update(payload.get('enc'),
+                                          payload.get('gyro'))
+            if pose is not None:
+                payload = dict(payload)
+                payload['odom'] = pose
+        self.telemetry = payload
         self.run_id_seen = env.run_id
-        estop = bool(env.payload.get('estop', False))
+        estop = bool(payload.get('estop', False))
         if estop != self.estop:
             self.estop = estop
             self.estopChanged.emit(estop)
-        self.telemetryChanged.emit(env.payload)
+        self.telemetryChanged.emit(payload)
 
     def on_scan(self, env) -> None:
         self.streams['scan'].touch(env.seq)

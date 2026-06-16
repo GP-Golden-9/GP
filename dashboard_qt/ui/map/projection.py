@@ -69,7 +69,19 @@ def offset_from_alignment(raw: Pose, desired: Pose) -> FrameOffset:
 # ── Detection → world ─────────────────────────────────────────────────────
 DIST_K = 0.9          # meters at bbox height = full frame (tuned for flames)
 DIST_MIN = 0.4
-DIST_MAX = 4.0
+DIST_MAX = 6.0
+
+# Monocular range scales with the target's REAL height: at a given bbox
+# height a taller object is farther away. K is "metres when the box fills
+# the frame", so it tracks real height (a standing person ~1.7 m reads much
+# farther than a knee-high flame). Per-kind so a person isn't placed on the
+# robot's lap. Still an ESTIMATE — markers are labelled as such.
+DIST_K_BY_KIND = {
+    'FIRE': 0.9,
+    'HUMAN': 1.8,
+    'DOG': 0.5,
+    'CAT': 0.4,
+}
 
 
 def detection_bearing(cx_norm: float, hfov_deg: float) -> float:
@@ -78,16 +90,16 @@ def detection_bearing(cx_norm: float, hfov_deg: float) -> float:
     return -(cx_norm - 0.5) * math.radians(hfov_deg)
 
 
-def detection_distance(bbox_h_norm: float) -> float:
+def detection_distance(bbox_h_norm: float, dist_k: float = DIST_K) -> float:
     h = max(0.02, min(1.0, bbox_h_norm))
-    return max(DIST_MIN, min(DIST_MAX, DIST_K / h))
+    return max(DIST_MIN, min(DIST_MAX, dist_k / h))
 
 
 def detection_to_world(pose: Pose, cx_norm: float, bbox_h_norm: float,
-                       hfov_deg: float) -> tuple[float, float]:
+                       hfov_deg: float, dist_k: float = DIST_K) -> tuple[float, float]:
     """``pose`` must already be in the shared map frame (offset applied)."""
     ang = pose.th + detection_bearing(cx_norm, hfov_deg)
-    d = detection_distance(bbox_h_norm)
+    d = detection_distance(bbox_h_norm, dist_k)
     return pose.x + d * math.cos(ang), pose.y + d * math.sin(ang)
 
 

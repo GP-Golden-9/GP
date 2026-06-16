@@ -41,6 +41,9 @@ GOAL_LINE    = '#f5b941'
 MARKER_FIRE  = '#ff6b35'
 MARKER_GAS   = '#f5b941'
 MARKER_PIN   = '#3da9fc'
+MARKER_HUMAN = '#4ade80'
+MARKER_DOG   = '#a78bfa'
+MARKER_CAT   = '#f472b6'
 
 QSS = f"""
 QMainWindow, QDialog {{ background: {BG}; }}

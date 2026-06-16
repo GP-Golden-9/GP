@@ -35,6 +35,7 @@ class Esp32Link(QObject):
         self._pending_dir: str | None = None
         self._seq = 0
         self._up: bool | None = None
+        self._fails = 0                  # consecutive telemetry failures
         self._thread: threading.Thread | None = None
 
     # same surface as CommandClient (subset that applies) ──────────────────
@@ -83,20 +84,21 @@ class Esp32Link(QObject):
             with self._cmd_lock:
                 d, self._pending_dir = self._pending_dir, None
             if d is not None:
+                # Drive gets a SHORT timeout so a momentary stall can't block
+                # the control stream (the cause of the control lag).
                 try:
                     self._session.get(f'http://{self.host}/control',
-                                      params={'dir': d}, timeout=self.timeout_s)
+                                      params={'dir': d}, timeout=0.4)
                 except requests.RequestException:
                     pass
 
             if now >= next_poll:
                 next_poll = now + self.poll_period
-                up = False
                 try:
                     r = self._session.get(f'http://{self.host}/telemetry',
-                                          timeout=self.timeout_s)
+                                          timeout=min(self.timeout_s, 0.6))
                     data = r.json()
-                    up = True
+                    self._fails = 0
                     self._seq += 1
                     # NOTE: the ESP32 has no odometry — its telemetry x/y are
                     # accelerometer TILT, never feed them into the pose
@@ -108,8 +110,11 @@ class Esp32Link(QObject):
                         'odom': {'x': 0.0, 'y': 0.0, 'th': 0.0, 'v': 0, 'w': 0},
                     }, seq=self._seq, run_id=self.run_id, src=self.host))
                 except (requests.RequestException, ValueError):
-                    pass
+                    self._fails += 1
+                # Debounce: 'up' on any good poll, 'down' only after 3 misses
+                # in a row, so a single dropped poll no longer flaps the link.
+                up = self._fails < 3
                 if up != self._up:
                     self._up = up
                     self.linkUp.emit(up)
-            time.sleep(0.05)
+            time.sleep(0.03)

@@ -47,7 +47,8 @@ FIRE_RAISE_HITS = 3
 FIRE_RAISE_WINDOW_S = 2.0
 GAS_RAISE_HITS = 2
 CLEAR_AFTER_S = 5.0
-SWEEP_PERIOD_MS = 500
+GAS_ALARM_SECONDS = 3.0          # gas alarm shows for exactly 3 s, then clears
+SWEEP_PERIOD_MS = 250
 
 
 @dataclass
@@ -56,6 +57,8 @@ class _KindTracker:
     hits: deque = field(default_factory=lambda: deque(maxlen=32))
     consecutive: int = 0
     last_positive: float = 0.0
+    raised_at: float = 0.0
+    armed: bool = True               # gas: re-fires only after the gas drops
     info: dict = field(default_factory=dict)
 
 
@@ -110,11 +113,13 @@ class AlertManager(QObject):
         tr = self._k[AlertKind.GAS]
         if not alarm_flag:
             tr.consecutive = 0
+            tr.armed = True              # gas dropped → ready to alarm again
             return
         now = time.monotonic()
         tr.last_positive = now
         tr.consecutive += 1
-        if tr.state is AlertState.CLEAR and tr.consecutive >= GAS_RAISE_HITS:
+        if (tr.state is AlertState.CLEAR and tr.armed
+                and tr.consecutive >= GAS_RAISE_HITS):
             self._raise(AlertKind.GAS, {
                 'robot': robot_id, 'label': 'gas leak',
                 'confidence': value, 'drill': False,
@@ -145,6 +150,9 @@ class AlertManager(QObject):
     def _raise(self, kind: AlertKind, info: dict) -> None:
         tr = self._k[kind]
         tr.state = AlertState.ACTIVE
+        tr.raised_at = time.monotonic()
+        if kind is AlertKind.GAS:
+            tr.armed = False             # one 3 s alarm per gas event
         info['t_wall'] = time.strftime('%H:%M:%S')
         tr.info = info
         self.alertRaised.emit(kind.value, info)
@@ -163,8 +171,15 @@ class AlertManager(QObject):
     def _sweep_clears(self) -> None:
         now = time.monotonic()
         for kind, tr in self._k.items():
-            if (tr.state is not AlertState.CLEAR
-                    and now - tr.last_positive > CLEAR_AFTER_S):
+            if tr.state is AlertState.CLEAR:
+                continue
+            # GAS: fixed 3 s alarm then clear (stays quiet until gas drops and
+            # re-arms). FIRE: clear after no positive detection for CLEAR_AFTER_S.
+            if kind is AlertKind.GAS:
+                expired = now - tr.raised_at > GAS_ALARM_SECONDS
+            else:
+                expired = now - tr.last_positive > CLEAR_AFTER_S
+            if expired:
                 tr.state = AlertState.CLEAR
                 tr.hits.clear()
                 tr.consecutive = 0

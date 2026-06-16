@@ -43,12 +43,15 @@ SCAN_REBUILD_MIN_S = 0.1
 # radius and SMOOTH its position instead of spawning a twin. Monocular
 # range estimates jitter by tens of centimeters frame to frame — without
 # this, a single fire floods the map with a marker cloud.
-MARKER_MERGE_M = {'FIRE': 2.0, 'GAS': 2.0, 'PIN': 0.3}
+MARKER_MERGE_M = {'FIRE': 2.0, 'GAS': 2.0, 'PIN': 0.3,
+                  'HUMAN': 1.5, 'DOG': 1.5, 'CAT': 1.5}
 MARKER_POS_BLEND = 0.25            # new estimate weight when merging
 
-MARKER_GLYPH = {'FIRE': '▲', 'GAS': '◆', 'PIN': '●'}
+MARKER_GLYPH = {'FIRE': '▲', 'GAS': '◆', 'PIN': '●',
+                'HUMAN': 'H', 'DOG': 'D', 'CAT': 'C'}
 MARKER_COLOR = {'FIRE': theme.MARKER_FIRE, 'GAS': theme.MARKER_GAS,
-                'PIN': theme.MARKER_PIN}
+                'PIN': theme.MARKER_PIN, 'HUMAN': theme.MARKER_HUMAN,
+                'DOG': theme.MARKER_DOG, 'CAT': theme.MARKER_CAT}
 
 
 def _occupancy_color_table() -> list:

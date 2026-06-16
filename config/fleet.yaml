@@ -13,10 +13,13 @@ dashboard:
   speed_default_mps: 0.15
   turn_rate_rps: 0.5
   models_dir: ../models        # relative to dashboard_qt/
-  # fire.pt measured strongest on real fire photos (28-37% conf, clean
-  # detections); yolov8n-fire.pt (dual-head, also COCO objects) scored
-  # 13-20% with noise — selectable in the toolbar when COCO classes matter.
-  default_model: fire.pt
+  # DUAL-MODEL (2026-06-13): the primary is a CLEAN COCO net (person/dog/cat);
+  # fire.pt is the secondary, fire-ONLY net. On a real backlit frame fire.pt
+  # scored 0% on a person that yolov8s got 92% on — its fire fine-tune
+  # destroyed its COCO classes, so it must never be the primary. Swap the
+  # primary to yolov8m.pt for ~4% more accuracy at ~half the framerate.
+  default_model: yolov8s.pt
+  fire_model: fire.pt          # secondary; only its 'Fire' class is trusted
   # Operator decision 2026-06-11: night-room testing produced false alarms
   # at 26-39%, so the alarm gate was raised to 0.80 on request. BE AWARE:
   # fire.pt's measured confidence on REAL fire photos is 28-37% — at 0.80
@@ -25,3 +28,26 @@ dashboard:
   # the alarm UX. The real fix for the 26-39% overlap between real fire
   # and false positives is a better-trained model, not a threshold.
   fire_conf_min: 0.80
+
+  # Object detection + map projection (fire.pt is 81-class: 80 COCO + Fire).
+  # The console restricts inference to these classes, draws them on the
+  # video, and drops a map marker once a detection clears its per-class
+  # confidence floor. 'fire' matches fire/smoke/flame. Tunable live in the
+  # toolbar is the model; thresholds load from here.
+  detect:
+    classes: [person, dog, cat, fire]
+    conf:
+      person: 0.70          # human only above 70%
+      dog:    0.60
+      cat:    0.60
+      fire:   0.60          # "fire at 60%" — map marker floor for flames
+    # Inference quality (laptop-side). 640 benchmarked faster AND more
+    # confident than 960 when the subject fills the frame (the usual case);
+    # raise toward 960 only for small distant targets. augment = test-time
+    # augmentation: a few more mAP at ~half the fps — stationary use only.
+    imgsz: 640
+    augment: false
+    # Classical detector for a PRINTED/animated flame prop (saturated
+    # red+yellow, flame-shaped) that the real-fire net can't see — for
+    # demos. Set false in production where only genuine fire should alarm.
+    fire_prop_detector: true

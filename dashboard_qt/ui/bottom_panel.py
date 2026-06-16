@@ -13,6 +13,13 @@ from PySide6.QtWidgets import (QHeaderView, QPlainTextEdit, QPushButton,
 from ui import theme
 from ui.diagnostics import DiagnosticsPanel
 
+# Kind → text colour in the detections table (matches the map marker colours).
+_MARKER_TEXT_COLOR = {
+    'FIRE': theme.MARKER_FIRE, 'GAS': theme.MARKER_GAS,
+    'HUMAN': theme.MARKER_HUMAN, 'DOG': theme.MARKER_DOG,
+    'CAT': theme.MARKER_CAT,
+}
+
 MAX_BLOCKS = 2000
 
 
@@ -85,10 +92,8 @@ class DetectionsTable(QWidget):
             for col, value in enumerate((m.t_wall or '—', m.kind, m.robot or '—',
                                          conf, f'{m.x:+.2f}', f'{m.y:+.2f}')):
                 item = QTableWidgetItem(str(value))
-                if col == 1 and m.kind == 'FIRE':
-                    item.setForeground(QColor(theme.MARKER_FIRE))
-                elif col == 1 and m.kind == 'GAS':
-                    item.setForeground(QColor(theme.MARKER_GAS))
+                if col == 1 and m.kind in _MARKER_TEXT_COLOR:
+                    item.setForeground(QColor(_MARKER_TEXT_COLOR[m.kind]))
                 self.table.setItem(row, col, item)
 
     def _locate_selected(self) -> None:
