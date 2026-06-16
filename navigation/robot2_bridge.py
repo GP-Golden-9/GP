@@ -48,7 +48,7 @@ class Robot2Bridge(Node):
         self.declare_parameter('max_linear_speed', 0.5)
         # Torque floor for skid-steer pivots (config drive.turn_pwm) —
         # four wheels scrubbing sideways need more than driving PWM.
-        self.declare_parameter('turn_pwm', 215)
+        self.declare_parameter('turn_pwm', 255)   # max pivot torque/speed
         # Minimum PWM that actually moves the chassis (config drive.min_pwm).
         # Below ~150 the motors hum without breaking static friction —
         # the old 80..255 mapping made the console's default speed a no-op.
@@ -160,20 +160,41 @@ class Robot2Bridge(Node):
                 self.arduino = serial.Serial(p, baud, timeout=1)
                 time.sleep(2)  # Arduino resets on serial open
 
-                # Drain the boot banner — BOUNDED. v5 firmware streams D:/B:
-                # telemetry at 50 Hz, so a bare `while in_waiting:` NEVER
-                # goes quiet: field failure 2026-06-11, the constructor
-                # looped here forever (8,900+ journald lines in minutes),
-                # the reader thread never started and /encoders stayed
-                # silent. Telemetry lines are not worth logging anyway.
-                deadline = time.time() + 3.0
-                while time.time() < deadline and self.arduino.in_waiting:
+                # Wait for the Mega to actually START STREAMING before we
+                # call it connected. Opening the port DTR-resets the Arduino;
+                # its setup() (incl. the marginal GY-87 IMU I2C init) can take
+                # several seconds. The old code declared 'connected' the
+                # instant the banner drained, so the reader's 3 s death-timer
+                # started before the firmware reached its 50 Hz loop — if
+                # setup() ran long the reader reconnected, which RE-RESET the
+                # Mega, and it thrashed for a minute-plus before luck let
+                # setup() finish inside the window ("map moves after 2 min").
+                # Block here (uninterrupted, no reset) until a real telemetry
+                # line (D:/B:) arrives. Banner lines are logged as they pass.
+                # Still BOUNDED — never the unbounded in_waiting spin that
+                # hung the constructor in the field (2026-06-11).
+                boot_deadline = time.time() + 10.0
+                streaming = False
+                while time.time() < boot_deadline:
                     line = self.arduino.readline().decode(errors='ignore').strip()
-                    if line and not line.startswith(('D:', 'B:')):
-                        self.get_logger().info(f'Arduino: {line}')
+                    if not line:
+                        continue
+                    if line.startswith(('D:', 'B:')):
+                        streaming = True
+                        break
+                    self.get_logger().info(f'Arduino: {line}')
+                if not streaming:
+                    self.get_logger().warn(
+                        f'{p}: opened but no telemetry in 10 s — retrying')
+                    try:
+                        self.arduino.close()
+                    except Exception:
+                        pass
+                    continue
 
                 self.connected = True
-                self.get_logger().info(f'Connected to Arduino on {p} @ {baud}')
+                self.get_logger().info(
+                    f'Connected to Arduino on {p} @ {baud} (streaming)')
                 self._send('P{}'.format(self.pwm_speed))
                 return
             except Exception as e:
@@ -261,11 +282,15 @@ class Robot2Bridge(Node):
                 self._drop_serial()
                 continue
             if not raw:
-                if time.monotonic() - last_line_t > 3.0:
+                # 5 s, not 3: the firmware streams at 50 Hz so true death is
+                # still caught fast, but a brief stall under motor load no
+                # longer triggers a reconnect — and a reconnect DTR-resets the
+                # Mega, the very thing that caused the startup thrash.
+                if time.monotonic() - last_line_t > 5.0:
                     self.get_logger().error(
-                        'serial silent 3 s — USB re-enumerated? reconnecting')
+                        'serial silent 5 s — USB re-enumerated? reconnecting')
                     self._announce_serial(
-                        'SERIAL: Mega silent 3 s — reconnecting')
+                        'SERIAL: Mega silent 5 s — reconnecting')
                     self._drop_serial()
                 continue
             last_line_t = time.monotonic()

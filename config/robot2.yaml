@@ -2,7 +2,7 @@
 robot:
   id: robot2
   name: Beta
-  host: robot2.local
+  host: 192.168.1.203
   kind: ros
   user: muc            # SSH user (console diagnostics / shutdown)
 
@@ -26,7 +26,14 @@ camera:
   width: 640
   height: 480
   fps: 15                # Pi 3B+ headroom; 30 was saturating one core
-  jpeg_quality: 35
+  # 35 -> 80 (2026-06-13) helped YOLO detail, but q80 pushed video to
+  # ~5.2 Mbps on Beta's single shared WiFi — telemetry then stalled behind
+  # the fat frames and arrived in bursts, so the MAP POSE lagged real motion
+  # (2026-06-16). Settled at 60: keeps most detail (~3.5 Mbps) and frees
+  # airtime for the 20 Hz telemetry. The dashboard now also coalesces
+  # telemetry bursts (transport/zmq_link.py) so the map can't trail even if
+  # bandwidth spikes — the two fixes are complementary.
+  jpeg_quality: 60
   legacy_port: 5555      # raw-JPEG channel kept for the tmux fallback
                          # streamer compatibility; set to 0 to disable
 
@@ -58,7 +65,8 @@ drive:
   max_linear_mps: 0.5
   # Skid-steer pivots scrub four wheels sideways — they need MORE torque
   # than driving. Below ~180 PWM the motors stall-judder ("suffering").
-  turn_pwm: 215
+  turn_pwm: 255          # max — pivots scrub 4 wheels; raised from 215 for
+                         # faster rotation (was sluggish, esp. on low battery)
   # Verified 2026-06-11 (direct-serial test): PWM 255 moves hard, but the
   # old 80..255 mapping put the console's DEFAULT speed at ~PWM 132 —
   # below static friction, robot didn't move at all. Drive PWM now maps

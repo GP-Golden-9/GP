@@ -374,7 +374,15 @@ def main():
 
     rclpy.init(args=ros_args)
     node = GatewayNode(cfg, run_id)
-    executor = MultiThreadedExecutor(num_threads=4)
+    # 2 threads, not 4: rclpy's MultiThreadedExecutor busy-WAITS in every
+    # worker thread, so on the Pi 3B+ four threads burned ~40% of a core
+    # spinning AND inflated the run queue, delaying the real odom/telemetry
+    # callbacks from getting scheduled — the map pose trailed live movement
+    # while the standalone camera (own process) stayed smooth (2026-06-16).
+    # Two threads still isolate the dedicated command-poll group (so a slow
+    # /map callback on the SLAM robot can't starve drive ACKs) at half the
+    # idle spin.
+    executor = MultiThreadedExecutor(num_threads=2)
     executor.add_node(node)
     try:
         executor.spin()

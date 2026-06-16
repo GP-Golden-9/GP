@@ -18,23 +18,16 @@ bad()  { say "❌ $*"; FAIL=1; }
 FREE_MB=$(df -Pm / | awk 'NR==2 {print $4}')
 if [ "${FREE_MB:-0}" -ge 300 ]; then ok "disk ${FREE_MB} MB free"; else bad "disk only ${FREE_MB} MB free (<300)"; fi
 
-# 4. Power health (Pi 3B+ is the brown-out-prone one — block on live undervoltage)
-# Boot inrush (USB enumeration + WiFi radio) can trip the undervoltage bit
-# for an instant right when this service runs; sample up to 3x over 10 s
-# and block only if the sag PERSISTS. Field case 2026-06-11: capacitors
-# fixed the rail, but preflight kept failing on the boot blip.
+# 4. Power health — WARN ONLY (operator override 2026-06-15). Undervoltage
+# no longer BLOCKS the stack: log it so the issue stays visible, but let the
+# robot run. NOTE: running under real undervoltage risks brown-out resets /
+# SD corruption, especially under motor load — fix the rail when you can.
 mkdir -p "$HOME/gp_logs"
-for attempt in 1 2 3; do
-    THROTTLED=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)
-    echo "$(date '+%F %T') preflight try$attempt ${THROTTLED:-n/a}" >> "$HOME/gp_logs/throttled.log"
-    case "${THROTTLED:-}" in
-        *1|*3|*5|*7|*9|*b|*d|*f) [ "$attempt" -lt 3 ] && { say "⚠ undervoltage flag (try $attempt/3) — settling…"; sleep 5; } ;;
-        *) break ;;
-    esac
-done
+THROTTLED=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)
+echo "$(date '+%F %T') preflight ${THROTTLED:-n/a}" >> "$HOME/gp_logs/throttled.log"
 case "${THROTTLED:-}" in
-    *1|*3|*5|*7|*9|*b|*d|*f) bad "UNDERVOLTAGE PERSISTS (get_throttled=${THROTTLED}) — fix power before driving" ;;
-    "")                      say "⚠ vcgencmd unavailable (not a Pi?)" ;;
+    *1|*3|*5|*7|*9|*b|*d|*f) say "WARN: undervoltage (get_throttled=${THROTTLED}) — continuing anyway (override)" ;;
+    "")                      say "vcgencmd unavailable (not a Pi?)" ;;
     *)                       ok "power flags ${THROTTLED}" ;;
 esac
 
@@ -51,9 +44,13 @@ from gpcore.config import load_robot_config
 load_robot_config("$GP_DIR/config/robot2.yaml")
 EOF
 
-# 6. Load average sanity (Pi 3B+: refuse to start into an overloaded system)
+# 6. Load average — WARN ONLY (operator override 2026-06-15). The Pi 3B+
+# legitimately runs the full ROS stack + camera near load ~4, and restart
+# churn spikes it higher, so this no longer blocks — it just logs. The stack
+# starts regardless ("keep running").
 LOAD1=$(cut -d' ' -f1 /proc/loadavg)
-awk -v l="$LOAD1" 'BEGIN {exit !(l < 3.0)}' && ok "load ${LOAD1}" || bad "load ${LOAD1} ≥ 3.0 — investigate before launch"
+awk -v l="$LOAD1" 'BEGIN {exit !(l < 3.0)}' && ok "load ${LOAD1}" \
+    || say "WARN: load ${LOAD1} high — continuing anyway (override)"
 
 [ $FAIL -eq 0 ] && say "PREFLIGHT PASS" || say "PREFLIGHT FAIL"
 exit $FAIL
