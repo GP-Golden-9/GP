@@ -64,6 +64,11 @@ BIAS_STALE_S = 0.8
 TURN_SIGN = 1.0
 MANUAL_OVERRIDE_S = 1.0
 RATE_HZ = 10.0
+# SAFETY: WANDER drives autonomously on the Pi, so if the console vanishes
+# (closed, crashed, or WiFi dropped) nothing would stop it. The dashboard
+# re-affirms AUTONOMOUS at ~2 Hz; if that heartbeat goes stale, STOP. (GOAL
+# mode also has the bias deadman, but this covers WANDER and is the master.)
+EXPLORE_TIMEOUT_S = 2.0
 
 try:
     _cfg = load_config(_CFG_PATH)
@@ -82,6 +87,8 @@ try:
     REV_TIME_S = float(get_path(_cfg, 'local_nav.reverse_time_s', REV_TIME_S))
     BIAS_STALE_S = float(get_path(_cfg, 'local_nav.bias_stale_s', BIAS_STALE_S))
     TURN_SIGN = float(get_path(_cfg, 'local_nav.turn_sign', TURN_SIGN))
+    EXPLORE_TIMEOUT_S = float(get_path(_cfg, 'local_nav.explore_timeout_s',
+                                       EXPLORE_TIMEOUT_S))
 except Exception:                        # config unreadable → fallbacks
     pass
 
@@ -91,6 +98,7 @@ class Robot2LocalNav(Node):
         super().__init__('robot2_local_nav')
         self.enabled = False
         self.estop = False
+        self.explore_t = 0.0           # last AUTONOMOUS heartbeat (safety)
         self.left = MAXR_M
         self.right = MAXR_M
 
@@ -137,10 +145,14 @@ class Robot2LocalNav(Node):
         self.right = m.range if m.range > 0.0 else MAXR_M
 
     def _enable_cb(self, m: Bool):
-        self.enabled = bool(m.data)
-        self.get_logger().info('AUTONOMOUS ' +
-                               ('ENABLED' if self.enabled else 'DISABLED'))
-        if not self.enabled:
+        en = bool(m.data)
+        if en:
+            self.explore_t = time.monotonic()      # heartbeat (streamed ~2 Hz)
+        if en != self.enabled:                     # log only on state change
+            self.get_logger().info('AUTONOMOUS ' +
+                                   ('ENABLED' if en else 'DISABLED'))
+        self.enabled = en
+        if not en:
             self._reset_latches()
             self._stop()
 
@@ -182,6 +194,15 @@ class Robot2LocalNav(Node):
         if not self.enabled or self.estop:
             return
         now = time.monotonic()
+        # SAFETY: the console must keep re-affirming AUTONOMOUS. If that
+        # heartbeat goes stale (console closed/crashed, WiFi dropped), STOP —
+        # never keep wandering with no operator. Latches reset so it resumes
+        # cleanly when the heartbeat returns.
+        if now - self.explore_t > EXPLORE_TIMEOUT_S:
+            self._reset_latches()
+            self._stop()
+            self._status('LINK LOST — stopped')
+            return
         if now < self._manual_until:        # operator override active
             self._status('MANUAL')
             return

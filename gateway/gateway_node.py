@@ -87,7 +87,17 @@ class GatewayNode(Node):
             'nav_status': 'IDLE', 'motor_status': '',
             'accessory': '',
             'us': None,        # {'l': metres, 'r': metres} front ultrasonics
+            'heading': None,   # robot-integrated yaw (rad); accurate 50 Hz
         }
+        # 50 Hz heading integration on the robot (lidar-less robots). The
+        # laptop's 20 Hz gyro integration drifts during autonomous turning;
+        # integrating here at the IMU rate is far more accurate and costs one
+        # float-add per callback. Residual bias is learned while the robot is
+        # stopped (encoders unchanged) so temperature drift doesn't creep it.
+        self._heading = 0.0
+        self._heading_last = None
+        self._gyro_bias = 0.0
+        self._last_enc_sum = None
         self._last_scan_fwd = 0.0
         self._last_map_fwd = 0.0
         # laser frame yaw vs base_link (pi on robot1: A1 zero axis faces
@@ -163,11 +173,27 @@ class GatewayNode(Node):
         self.health.touch('encoders')
 
     def _imu_cb(self, msg: Imu):
-        self.state['gyro'] = [msg.angular_velocity.x, msg.angular_velocity.y,
-                              msg.angular_velocity.z]
+        gz = msg.angular_velocity.z
+        self.state['gyro'] = [msg.angular_velocity.x, msg.angular_velocity.y, gz]
         self.state['accel'] = [msg.linear_acceleration.x,
                                msg.linear_acceleration.y,
                                msg.linear_acceleration.z]
+        # ── 50 Hz heading integration (cheap; accurate vs laptop 20 Hz) ──
+        enc = self.state.get('enc')
+        enc_sum = sum(abs(int(e)) for e in enc) if enc else None
+        stopped = (enc_sum is not None and enc_sum == self._last_enc_sum)
+        self._last_enc_sum = enc_sum
+        if stopped:                       # learn residual bias while still
+            self._gyro_bias += 0.01 * (gz - self._gyro_bias)
+        now = self.get_clock().now().nanoseconds / 1e9
+        if self._heading_last is not None:
+            dt = now - self._heading_last
+            if 0.0 < dt < 0.5:
+                self._heading += (gz - self._gyro_bias) * dt
+                self._heading = math.atan2(math.sin(self._heading),
+                                           math.cos(self._heading))
+        self._heading_last = now
+        self.state['heading'] = round(self._heading, 4)
         self.health.touch('imu')
 
     def _odom_cb(self, msg: Odometry):

@@ -53,6 +53,13 @@ class Robot2Bridge(Node):
         # Below ~150 the motors hum without breaking static friction —
         # the old 80..255 mapping made the console's default speed a no-op.
         self.declare_parameter('min_pwm', 150)
+        # Autonomous speed ceilings (config drive.auto_*). AUTONOMOUS drives on
+        # its own, so it must be GENTLE — full-speed wander overshoots the
+        # ultrasonic stop and clips walls. Forward is capped well below manual
+        # (255) and pivots below turn_pwm (255). The speed slider scales within
+        # these. Raise only after the obstacle response is trusted.
+        self.declare_parameter('auto_fwd_max_pwm', 185)
+        self.declare_parameter('auto_turn_pwm', 205)
         # Keepalive: firmware stops motors after WATCHDOG_MS (1 s) of serial
         # silence, so a non-stop command must be re-sent periodically — but
         # ONLY while fresh Twists keep arriving (deadman), otherwise a dead
@@ -84,6 +91,10 @@ class Robot2Bridge(Node):
         self.manual_last_time = time.time()
         self.pwm_speed = 180            # what the firmware currently has
         self.pwm_target = 180           # what the active maneuver wants
+        # Speed slider (CMD_SPEED -> /set_speed, 0..1). Authoritative top-speed
+        # CAP applied to BOTH manual and autonomous in _twist_to_cmd — this is
+        # the operator's real speed control. 1.0 = full range; default gentle.
+        self._speed_scale = 0.6
         self.last_cmd = 'S'
         self.last_motion = 'S'          # last F/B/L/R/S actually sent
         self.last_twist_time = 0.0      # monotonic time of last accepted Twist
@@ -467,7 +478,7 @@ class Robot2Bridge(Node):
                 self.log_pub.publish(String(data=line))
         return not self._fwd_blocked
 
-    def _twist_to_cmd(self, msg: Twist) -> str:
+    def _twist_to_cmd(self, msg: Twist, is_auto: bool = False) -> str:
         linear = msg.linear.x
         angular = msg.angular.z
 
@@ -483,19 +494,25 @@ class Robot2Bridge(Node):
         else:
             cmd = 'L' if angular > 0 else 'R'
 
-        # PWM by maneuver — and updated for TURNS too (the old code only
-        # set PWM from linear speed, so pivots ran on stale, often tiny
-        # PWM: four skid-steering wheels at PWM~120 stall-judder and the
-        # motors groan). Pivots get the configured torque floor.
+        # PWM by maneuver. The speed slider (self._speed_scale, 0..1) is the
+        # authoritative top-speed CAP and applies to BOTH manual and auto —
+        # this is what was missing (the slider used to be overwritten here, and
+        # autonomous was never capped, so it ran flat-out and clipped walls).
+        # Autonomous uses gentler ceilings than manual.
         max_lin = self.get_parameter('max_linear_speed').value
         min_pwm = int(self.get_parameter('min_pwm').value)
+        scale = self._speed_scale
         if cmd in ('F', 'B'):
+            top = int(self.get_parameter('auto_fwd_max_pwm').value) if is_auto else 255
+            cap = min_pwm + scale * (top - min_pwm)
             factor = min(abs(linear) / max_lin, 1.0) if max_lin > 0 else 1.0
-            new_pwm = int(min_pwm + factor * (255 - min_pwm))
+            new_pwm = int(min_pwm + factor * (cap - min_pwm))
+        elif is_auto:
+            # gentle, slider-scaled pivot (floored so it never stall-judders)
+            turn_cap = int(self.get_parameter('auto_turn_pwm').value)
+            new_pwm = int(min_pwm + scale * (turn_cap - min_pwm))
         else:
-            turn_pwm = int(self.get_parameter('turn_pwm').value)
-            factor = min(abs(angular) / 1.0, 1.0)
-            new_pwm = max(turn_pwm, int(min_pwm + factor * (255 - min_pwm)))
+            new_pwm = int(self.get_parameter('turn_pwm').value)
 
         # PWM is no longer stepped to directly — _ramp_tick slews toward
         # the target. Soft launch: from rest, torque starts at the
@@ -555,18 +572,18 @@ class Robot2Bridge(Node):
         if self.estop or self.manual_mode:
             return
         self.last_twist_time = time.monotonic()
-        cmd = self._twist_to_cmd(msg)
+        cmd = self._twist_to_cmd(msg, is_auto=True)
         if cmd == 'F' and not self._forward_clear():
             cmd = 'S'
         if cmd != self.last_motion or cmd == 'S':
             self._send(cmd)
 
     def _speed_cb(self, msg: Float32):
-        pwm = int(80 + msg.data * 175)
-        self.pwm_target = pwm
-        if self.last_motion == 'S':     # idle: take effect immediately
-            self.pwm_speed = pwm
-            self._send(f'P{pwm}')
+        # The slider is the top-speed CAP, applied per-command in
+        # _twist_to_cmd (manual + auto). Don't poke pwm_target here — that's
+        # what made the slider a no-op (the next drive command overwrote it).
+        self._speed_scale = max(0.0, min(1.0, float(msg.data)))
+        self.get_logger().info(f'speed scale -> {self._speed_scale:.2f}')
 
     def _estop_cb(self, msg: Bool):
         """Emergency stop — highest priority, latches until released."""

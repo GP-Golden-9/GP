@@ -67,6 +67,12 @@ drive:
   # than driving. Below ~180 PWM the motors stall-judder ("suffering").
   turn_pwm: 255          # max — pivots scrub 4 wheels; raised from 215 for
                          # faster rotation (was sluggish, esp. on low battery)
+  # AUTONOMOUS speed ceilings (bridge declared-param defaults mirror these).
+  # Autonomous drives itself, so it must be gentle or it overshoots the
+  # ultrasonic stop and clips walls. Forward capped well under manual's 255,
+  # pivots under turn_pwm. The dashboard speed slider scales WITHIN these.
+  auto_fwd_max_pwm: 185
+  auto_turn_pwm: 205
   # Verified 2026-06-11 (direct-serial test): PWM 255 moves hard, but the
   # old 80..255 mapping put the console's DEFAULT speed at ~PWM 132 —
   # below static friction, robot didn't move at all. Drive PWM now maps
@@ -119,6 +125,11 @@ local_nav:
   # GOAL-mode deadman: if the laptop's bias stream goes stale for this long
   # (link lost), fall back to reactive WANDER instead of chasing a stale goal.
   bias_stale_s: 0.8
+  # SAFETY heartbeat timeout: WANDER runs autonomously on the Pi, so the
+  # console re-affirms AUTONOMOUS at ~2 Hz. If that stops (console closed,
+  # crashed, or WiFi dropped) for this long, the robot STOPS instead of
+  # wandering unattended.
+  explore_timeout_s: 2.0
   # Global steering-direction calibration. All steering uses ROS +wz=CCW=left.
   # If on the bench the robot turns INTO obstacles, the chassis/bridge sign is
   # reversed — set this to -1 (no code change needed).
