@@ -2,7 +2,8 @@
 
 **Brain:** Raspberry Pi 3B+ + Arduino Mega 2560 (`firmware/robot2_controller_v5`)
 **Drive:** 4 × 25GA370 12 V encoder motors on ONE L298N (paired per side)
-**Payload:** USB camera · GY-87 10-DOF IMU · water pump (relay) · arm servo
+**Payload:** USB camera · GY-87 10-DOF IMU · water pump (relay) · arm servo ·
+2 front HC-SR04 ultrasonics (added 2026-06-13)
 
 ## 1. Power tree (12 V battery → 5 V / 6 V)
 
@@ -71,7 +72,27 @@ Firmware safety already on top: 5 s max pump run, 1 s cooldown, pump off on
 watchdog/e-stop/boot; servo clamped 10–170°, slew-limited.
 Complete `docs/bench_robot2_v5.md` before first powered test.
 
-## 6. Bring-up checklist
+## 6. Front ultrasonics (HC-SR04 ×2, firmware v5)
+
+Two forward-facing HC-SR04 — Beta has no lidar, so these are its only
+real-time obstacle sense (forward-collision guard + goto slow-down). Read
+round-robin (~16 Hz each). The Mega is 5 V logic, so ECHO needs **no
+divider** (unlike the ESP32 on Gamma).
+
+| HC-SR04 | → | Mega | Function |
+|---|---|---|---|
+| LEFT  TRIG | → | **D30** | trigger |
+| LEFT  ECHO | → | **D31** | echo (5 V OK on Mega) |
+| RIGHT TRIG | → | **D32** | trigger |
+| RIGHT ECHO | → | **D33** | echo |
+| both VCC | → | **5 V** | |
+| both GND | → | GND | |
+
+Mount at the front edge (offsets in `config/robot2.yaml`: left +x0.15/+y0.07,
+right +x0.15/-y0.07). Thresholds: stop < 25 cm, clear > 40 cm, goto slows
+< 60 cm. A disconnected sensor reads `US_MAX_CM` (150 = "clear").
+
+## 7. Bring-up checklist
 
 - [ ] Both bucks set (5.10 V / 6.0 V) BEFORE connecting Pi & servo
 - [ ] Boot banner `v5.0`, `[INIT] Pump relay : OK (OFF)` — pump must NOT twitch at power-on

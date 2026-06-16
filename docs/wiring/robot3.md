@@ -2,7 +2,8 @@
 
 **Brain:** ESP32 DevKit (3.3 V logic!) — `firmware/robot3_controller_v2`
 **Drive:** 4 × 12 V DC motors (no encoders) on ONE L298N (paired per side)
-**Payload:** MQ-5 gas sensor · HC-SR04 ultrasonic · GY-87 IMU · buzzer
+**Payload:** MQ-5 gas sensor · HC-SR04 ultrasonic · GY-87/MPU6050 IMU · buzzer ·
+slew-limited servo (added 2026-06-13)
 
 ## 1. Power tree (12 V battery → 5 V → 3.3 V)
 
@@ -11,6 +12,7 @@
                                            └─→ LM2596S ─[5.10 V]─→ ESP32 5V/VIN pin
                                                                   ├─→ MQ-5 VCC (heater ~150 mA)
                                                                   ├─→ HC-SR04 VCC
+                                                                  ├─→ servo V+ (5 V; slew-limited in firmware, §5)
                                                                   └─→ buzzer + (via transistor, §5)
 ESP32 onboard 3V3 ─→ GY-87 VCC   (keeps I2C at 3.3 V — NEVER 5 V here)
 GND: battery − = buck − = L298N = ESP32 = every sensor  (one node)
@@ -57,12 +59,19 @@ after power-on before readings are meaningful.
 
 ECHO is a **5 V output** — the divider protects the ESP32 pin.
 
-## 5. Buzzer + IMU
+## 5. Buzzer + IMU + Servo
 
 | Item | Wiring |
 |---|---|
 | Active buzzer | GPIO 15 → 1 kΩ → NPN base (2N2222); emitter → GND; buzzer between 5 V and collector. (Direct GPIO drive exceeds the 12 mA pin budget on most buzzers.) |
-| GY-87 | VCC → **3V3** · GND → GND · SDA → GPIO 21 · SCL → GPIO 22 |
+| GY-87 / MPU6050 | VCC → **3V3** · GND → GND · SDA → GPIO 21 · SCL → GPIO 22 (firmware reads the MPU6050 at 0x68; a GY-87 module carries that chip) |
+| Servo | signal → **GPIO 19** · V+ → **5 V** (NOT 3V3) · GND → GND |
+
+GPIO 19 was chosen because it is **not** a strapping pin (unlike 0/2/5/12/15),
+so the servo lead can stay connected during an FTDI flash. The firmware
+**slew-limits** the servo (~150 °/s) so a full swing spreads its current draw
+instead of one brown-out-inducing lunge — keep the servo on the 5 V rail,
+never the ESP32 3V3 pin (this board has a brown-out history).
 
 ## 6. Firmware & network
 

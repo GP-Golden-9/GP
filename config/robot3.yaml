@@ -2,14 +2,14 @@
 robot:
   id: robot3
   name: Gamma
-  host: robot3.local
+  host: 192.168.1.202
   kind: esp32
 
 http:
   control_path: /control     # ?dir=F|B|L|R|S
   telemetry_path: /telemetry # JSON {d,g,x,y,a,rssi,uptime,last_cmd_age}
-  poll_hz: 2
-  timeout_s: 1.0
+  poll_hz: 3                 # fresher gas/telemetry for the gauge
+  timeout_s: 0.6             # short → a stalled request won't lag control
 
 # ZMQ block required by the config schema; ESP32 exposes none of these.
 zmq:

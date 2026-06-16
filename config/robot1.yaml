@@ -2,7 +2,7 @@
 robot:
   id: robot1
   name: Alpha
-  host: robot.local
+  host: 192.168.1.200
   kind: ros            # ros | esp32
   user: muc            # SSH user (console diagnostics / shutdown)
 
