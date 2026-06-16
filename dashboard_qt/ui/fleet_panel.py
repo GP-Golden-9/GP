@@ -133,6 +133,7 @@ class FleetPanel(QWidget):
 
     def __init__(self, robots, parent=None):
         super().__init__(parent)
+        self.setMinimumWidth(258)        # cards stay legible, never a sliver
         outer = QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8)
         scroll = QScrollArea()

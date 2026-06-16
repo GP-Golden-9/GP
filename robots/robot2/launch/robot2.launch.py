@@ -64,18 +64,14 @@ def generate_launch_description():
         # 50 Hz and burned ~80% of a Pi core, starving the bridge/gateway so
         # the map pose lagged. The bridge still publishes /encoders + /imu, the
         # gateway still ships raw enc+gyro in telemetry, and the dashboard
-        # reconstructs the pose (dashboard_qt/state/local_odom.py). Re-enable
-        # this node only if a consumer ON the Pi ever needs /odom again.
+        # reconstructs the pose (dashboard_qt/state/local_odom.py).
         # _py('navigation/robot2_odom.py'),
-        # goto + autonomous DISABLED (2026-06-16) to free CPU on the Pi 3B+.
-        # At load ~6.5 / 80 C the whole ROS stack throttled, so the odom->
-        # gateway->telemetry chain lagged and the map pose trailed real
-        # movement (while the independent gp-camera stream stayed fast — the
-        # tell that it was CPU starvation, not the network). Neither node is
-        # needed for MANUAL driving + mapping. Re-add for autonomous mode /
-        # go-to-goal once Beta has active cooling.
-        # _py('navigation/robot2_goto.py'),
-        # _py('navigation/robot2_autonomous.py'),   # ultrasonic wander/avoid
+        # Autonomous nav (2026-06-16): ONE lean local fuser replaces the old
+        # robot2_goto + robot2_autonomous (which fought over /cmd_vel). It has
+        # NO pose/map math — goal-attraction is streamed from the laptop as a
+        # bias (/cmd_vel_bias) and fused here with ultrasonic repulsion. 10 Hz,
+        # trivial CPU. The old two nodes are retired (kept in git history).
+        _py('navigation/robot2_local_nav.py'),
         _py('gateway/gateway_node.py', '--config',
             os.path.join(REPO, 'config', 'robot2.yaml')),
 

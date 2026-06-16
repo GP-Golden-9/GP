@@ -9,19 +9,29 @@ robot switch, e-stop, mode change).
 
 from __future__ import annotations
 
+import math
 import time
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
 WP_TOLERANCE_M = 0.30          # intermediate waypoints; final = robot's own 0.12
 WP_TIMEOUT_S = 25.0            # no progress to the active waypoint → abort
-TICK_MS = 200
+TICK_MS = 100                  # 10 Hz — also the heading-bias stream rate
+
+# Default goto gains (mirror config/robot2.yaml goto.*); overridden per robot
+# via start(..., gains=...).
+_DEFAULT_GAINS = {
+    'kp_distance': 0.5, 'kp_angle': 1.2,
+    'max_linear_mps': 0.15, 'max_angular_rps': 0.40,
+    'angle_tolerance_rad': 0.15,
+}
 
 
 class MissionExecutor(QObject):
     waypointActive = Signal(int, int, float, float)   # idx, total, x, y (world)
     missionFinished = Signal(str)                     # 'arrived' | reason
     progress = Signal(str)                            # human line for the log
+    biasComputed = Signal(float, float)               # vx, wz toward active wp
 
     def __init__(self, send_goal_world, parent=None):
         """``send_goal_world(x, y)`` — callback that transforms into the
@@ -32,7 +42,8 @@ class MissionExecutor(QObject):
         self._wps: list[tuple[float, float]] = []
         self._idx = -1
         self._wp_started = 0.0
-        self._pose: tuple[float, float] | None = None
+        self._pose: tuple[float, float, float] | None = None   # x, y, th (world)
+        self._gains = dict(_DEFAULT_GAINS)
         self._timer = QTimer(self)
         self._timer.setInterval(TICK_MS)
         self._timer.timeout.connect(self._tick)
@@ -42,7 +53,8 @@ class MissionExecutor(QObject):
         return self._timer.isActive()
 
     # ── lifecycle ─────────────────────────────────────────────────────────
-    def start(self, robot_id: str, waypoints: list[tuple[float, float]]) -> None:
+    def start(self, robot_id: str, waypoints: list[tuple[float, float]],
+              gains: dict | None = None) -> None:
         self.cancel(silent=True)
         if not waypoints:
             return
@@ -50,6 +62,7 @@ class MissionExecutor(QObject):
         self._wps = list(waypoints)
         self._idx = -1
         self._pose = None
+        self._gains = {**_DEFAULT_GAINS, **(gains or {})}
         self._timer.start()
         self.progress.emit(f'mission: {len(waypoints)} waypoint(s) → {robot_id}')
         self._advance()
@@ -63,9 +76,10 @@ class MissionExecutor(QObject):
             self.missionFinished.emit(reason)
             self.progress.emit(f'mission {reason}')
 
-    def update_pose(self, robot_id: str, x: float, y: float) -> None:
+    def update_pose(self, robot_id: str, x: float, y: float,
+                    th: float = 0.0) -> None:
         if self.active and robot_id == self.robot_id:
-            self._pose = (x, y)
+            self._pose = (x, y, th)
 
     def remaining(self) -> list[tuple[float, float]]:
         return self._wps[self._idx:] if self.active and self._idx >= 0 else []
@@ -91,15 +105,33 @@ class MissionExecutor(QObject):
                 self.progress.emit('mission ABORTED — no odometry from robot')
             return
         x, y = self._wps[self._idx]
-        px, py = self._pose
+        px, py, pth = self._pose
         dist = ((px - x) ** 2 + (py - y) ** 2) ** 0.5
         final = (self._idx == len(self._wps) - 1)
         tol = 0.15 if final else WP_TOLERANCE_M
         if dist <= tol:
             self._advance()
-        elif time.monotonic() - self._wp_started > WP_TIMEOUT_S:
+            return
+        if time.monotonic() - self._wp_started > WP_TIMEOUT_S:
             self._timer.stop()
             self.missionFinished.emit('timeout')
             self.progress.emit(
                 f'mission ABORTED — waypoint {self._idx + 1} not reached in '
                 f'{WP_TIMEOUT_S:.0f}s (robot stuck?)')
+            return
+        self._emit_bias(px, py, pth, x, y, dist)
+
+    def _emit_bias(self, px, py, pth, gx, gy, dist) -> None:
+        """Stream a heading bias toward the active waypoint (rotate-then-drive,
+        same gains as the Pi goto used to run). The Pi fuses this attraction
+        with ultrasonic repulsion — see robot2_local_nav.py."""
+        g = self._gains
+        ang_err = math.atan2(gy - py, gx - px) - pth
+        ang_err = math.atan2(math.sin(ang_err), math.cos(ang_err))
+        max_w = g['max_angular_rps']
+        wz = max(-max_w, min(max_w, g['kp_angle'] * ang_err))
+        if abs(ang_err) > g['angle_tolerance_rad']:
+            vx = 0.0                       # face the waypoint before driving
+        else:
+            vx = min(g['max_linear_mps'], g['kp_distance'] * dist)
+        self.biasComputed.emit(vx, wz)

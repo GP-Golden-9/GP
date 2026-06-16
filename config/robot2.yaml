@@ -95,6 +95,35 @@ goto:
   kp_distance: 0.5
   kp_angle: 1.2
 
+# Local navigation fuser (navigation/robot2_local_nav.py) — the single
+# /cmd_vel publisher. GOAL mode fuses the laptop's streamed heading bias
+# (/cmd_vel_bias) with a repulsion field from the two front ultrasonics;
+# WANDER mode is the reactive avoid ladder. Speeds reuse goto.* / ultrasonic.*;
+# only the fuser-specific knobs live here.
+local_nav:
+  # Steer-away gain: a fully-blocked side (prox=1) yields k_rep rad/s of pivot
+  # away. Defaults to goto.max_angular_rps so the strongest repulsion can
+  # command a full-rate turn. Lower it if obstacle dodging feels twitchy.
+  k_rep: 0.40
+  # Ignore tiny left/right imbalance so sensor noise near the slow band can't
+  # wobble the heading.
+  steer_deadband: 0.10
+  # WANDER-mode open-space / slow-band forward speeds and reverse-out speed.
+  wander_fwd_mps: 0.12
+  wander_slow_mps: 0.07
+  reverse_mps: 0.10
+  # Anti-oscillation: hold a chosen pivot this long; reverse this long when
+  # boxed in on both sides.
+  turn_lock_s: 1.0
+  reverse_time_s: 0.6
+  # GOAL-mode deadman: if the laptop's bias stream goes stale for this long
+  # (link lost), fall back to reactive WANDER instead of chasing a stale goal.
+  bias_stale_s: 0.8
+  # Global steering-direction calibration. All steering uses ROS +wz=CCW=left.
+  # If on the bench the robot turns INTO obstacles, the chassis/bridge sign is
+  # reversed — set this to -1 (no code change needed).
+  turn_sign: 1.0
+
 # Two forward-facing HC-SR04 ultrasonics (added 2026-06-13). Beta has no
 # lidar, so these are its only real-time obstacle sense — they back-stop
 # both manual driving and goto navigation against driving into a wall.

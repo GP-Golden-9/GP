@@ -33,6 +33,10 @@ class OpsPanel(QWidget):
         self.prefs = prefs
         self._speed = prefs.speed_default
         self._estop = False
+        # Keep the teleop column from being squeezed to a sliver when the map
+        # claims the free width — the joystick, tools and proximity readout
+        # must stay fully visible.
+        self.setMinimumWidth(312)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 8, 10, 10)
@@ -150,6 +154,33 @@ class OpsPanel(QWidget):
         root.addWidget(self.gas_box)
         self.gas_box.setVisible(False)
 
+        # ── front ultrasonics (robot2 intervener) ──
+        self.prox_box = QGroupBox('PROXIMITY · FRONT ULTRASONIC')
+        pv = QGridLayout(self.prox_box)
+        pv.setVerticalSpacing(5)
+        pv.setHorizontalSpacing(8)
+        self.prox_bars: dict = {}
+        self.prox_lbls: dict = {}
+        for row, (key, name) in enumerate((('l', 'LEFT'), ('r', 'RIGHT'))):
+            cap = QLabel(name)
+            cap.setStyleSheet(f'color:{theme.MUTED}; font-size:9px; '
+                              'font-weight:700; letter-spacing:1px;')
+            bar = QProgressBar()
+            bar.setRange(0, 150)                 # cm; firmware echo cap
+            bar.setTextVisible(False)
+            bar.setMinimumHeight(16)
+            val = QLabel('—')
+            val.setStyleSheet(f'font-family:{theme.MONO}; font-weight:700; '
+                              'font-size:12px;')
+            val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            pv.addWidget(cap, row, 0)
+            pv.addWidget(bar, row, 1)
+            pv.addWidget(val, row, 2)
+            self.prox_bars[key] = bar
+            self.prox_lbls[key] = val
+        root.addWidget(self.prox_box)
+        self.prox_box.setVisible(False)
+
         root.addStretch(1)
 
         # ── E-STOP ──
@@ -162,10 +193,42 @@ class OpsPanel(QWidget):
 
     # ── public API ────────────────────────────────────────────────────────
     def set_target(self, name: str, robot_id: str, has_tools: bool,
-                   has_gas: bool = False) -> None:
+                   has_gas: bool = False, has_ultra: bool = False) -> None:
         self.target_lbl.setText(f'{name} · {robot_id}')
         self.tools_box.setVisible(has_tools)
         self.gas_box.setVisible(has_gas)
+        self.prox_box.setVisible(has_ultra)
+
+    def set_ultrasonic(self, us: dict | None, stop_cm: float = 25,
+                       slow_cm: float = 60) -> None:
+        """Live front-left/right distance bars: red under the hard-stop
+        threshold, amber in the slow-down zone, green clear."""
+        for key in ('l', 'r'):
+            bar = self.prox_bars[key]
+            lbl = self.prox_lbls[key]
+            m = us.get(key) if us else None
+            if m is None:
+                bar.setValue(0)
+                bar.setStyleSheet('')
+                lbl.setText('— no echo')
+                lbl.setStyleSheet(f'color:{theme.MUTED}; '
+                                  f'font-family:{theme.MONO}; font-size:12px;')
+                continue
+            cm = m * 100.0
+            bar.setValue(max(0, min(int(cm), 150)))
+            if cm <= stop_cm:
+                color = theme.BAD
+            elif cm <= slow_cm:
+                color = theme.WARN
+            else:
+                color = theme.GOOD
+            bar.setStyleSheet(
+                f'QProgressBar{{border:1px solid {theme.BORDER};'
+                f'border-radius:4px;background:#111;}} '
+                f'QProgressBar::chunk{{background:{color};border-radius:3px;}}')
+            lbl.setText(f'{cm:.0f} cm')
+            lbl.setStyleSheet(f'color:{color}; font-family:{theme.MONO}; '
+                              'font-weight:700; font-size:12px;')
 
     def set_gas(self, value: int, alarm: bool, warn_at: int = 2000,
                 alarm_at: int = 3000) -> None:

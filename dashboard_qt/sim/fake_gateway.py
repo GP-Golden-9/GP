@@ -40,6 +40,11 @@ from gpcore.nav import GotoController                       # noqa: E402
 from gpcore.protocol import channels as ch                  # noqa: E402
 from gpcore.protocol import commands as cmds                # noqa: E402
 from gpcore.protocol.envelope import make_envelope, pack_with_blob  # noqa: E402
+from navigation.local_nav_math import goal_fusion             # noqa: E402
+
+US_ANGLE = 0.22           # rad — sim front-left/right ultrasonic spread
+US_MAX = 1.50             # m — firmware echo cap
+US_STOP, US_SLOW = 0.25, 0.60
 
 RES = 0.05
 GRID_N = 80                       # 80 × 0.05 = 4 m
@@ -76,6 +81,9 @@ class SimRobot:
         self.estop = False
         self.exploring = False
         self.goto = GotoController()
+        # streamed heading bias (Beta's map-aware go-to-goal) — see local_nav
+        self.bias_vx = self.bias_wz = 0.0
+        self.bias_t = -1e9
 
     def occupied(self, x: float, y: float) -> bool:
         i = int((y - ORIGIN) / RES)
@@ -89,8 +97,12 @@ class SimRobot:
         if self.estop:
             self.v = self.w = 0.0
         elif now - self.last_drive > cmds.DEADMAN_S:
-            # autonomous sources keep their own cadence
-            if self.exploring:
+            # autonomous sources keep their own cadence. A fresh heading bias
+            # (Beta's map-aware go-to-goal) wins over wander — same priority as
+            # robot2_local_nav's GOAL-over-WANDER rule.
+            if now - self.bias_t <= 0.8:
+                self._bias_step()
+            elif self.exploring:
                 self._explore_step()
             elif self.goto.has_goal:
                 cmd = self.goto.step(self.x, self.y, self.th)
@@ -120,6 +132,25 @@ class SimRobot:
             self.v, self.w = 0.0, 0.5
         else:
             self.v, self.w = 0.12, 0.0
+
+    def us(self) -> tuple[float, float]:
+        """Sim front-left / front-right ultrasonic ranges (m), echo-capped."""
+        left = min(US_MAX, self.raycast(self.th + US_ANGLE))
+        right = min(US_MAX, self.raycast(self.th - US_ANGLE))
+        return left, right
+
+    def _bias_step(self) -> None:
+        """Drive from the streamed heading bias, fused with the sim's own
+        ultrasonics — mirrors robot2_local_nav so go-to-goal + dodging can be
+        exercised with zero hardware."""
+        left, right = self.us()
+        if min(left, right) < US_STOP:          # too close → pivot to open side
+            self.v, self.w = 0.0, 0.4 * (1 if left > right else -1)
+            return
+        self.v, self.w, _ = goal_fusion(
+            self.bias_vx, self.bias_wz, left, right,
+            stop=US_STOP, slow=US_SLOW, max_lin=0.15, turn=0.40,
+            k_rep=0.40, deadband=0.10)
 
     def raycast(self, angle: float) -> float:
         step = RES / 2
@@ -282,6 +313,13 @@ def main() -> int:
         robot.goto.set_goal(float(env.payload['x']), float(env.payload['y']))
         return True, 'ok'
 
+    def h_nav_bias(env):
+        robot.bias_vx = float(env.payload.get('vx', 0.0))
+        robot.bias_wz = float(env.payload.get('wz', 0.0))
+        robot.bias_t = time.monotonic()
+        robot.goto.cancel()                    # bias is Beta's drive mechanism
+        return True, 'ok'
+
     # RESET MAP: the real gateway restarts the SLAM stack; the sim mimics the
     # observable effect — the map goes blank, then the arena "rebuilds".
     map_reset_at = {'t': -1e9}
@@ -298,6 +336,7 @@ def main() -> int:
     server.set_handler(cmds.CMD_SERVO, h_servo)
     server.set_handler(cmds.CMD_EXPLORE, h_explore)
     server.set_handler(cmds.CMD_GOAL, h_goal)
+    server.set_handler(cmds.CMD_NAV_BIAS, h_nav_bias)
     server.set_handler(cmds.CMD_SPEED, lambda env: (True, 'ok'))
     server.set_handler(cmds.CMD_RESET_MAP, h_reset_map)
 
@@ -335,16 +374,27 @@ def main() -> int:
 
             if now - last_tele >= 0.05:
                 last_tele = now
+                us_l, us_r = robot.us()
+                bias_fresh = (now - robot.bias_t) <= 0.8
+                if robot.estop:
+                    nav = 'ESTOP'
+                elif bias_fresh:
+                    nav = 'BLOCKED' if min(us_l, us_r) < US_STOP else 'GOAL'
+                elif robot.exploring:
+                    nav = 'WANDER'
+                elif robot.goto.has_goal:
+                    nav = robot.goto.state.value
+                else:
+                    nav = 'IDLE'
                 server.publish('telemetry', ch.TELE_FULL, {
                     'enc': list(robot.enc),
                     'gyro': [0.0, 0.0, robot.w], 'accel': [0.0, 0.0, 9.81],
                     'odom': {'x': round(robot.x, 4), 'y': round(robot.y, 4),
                              'th': round(robot.th, 4),
                              'v': round(robot.v, 3), 'w': round(robot.w, 3)},
+                    'us': {'l': round(us_l, 2), 'r': round(us_r, 2)},
                     'pump': robot.pump, 'servo_deg': robot.servo,
-                    'estop': robot.estop,
-                    'nav_status': (robot.goto.state.value
-                                   if robot.goto.has_goal else 'IDLE'),
+                    'estop': robot.estop, 'nav_status': nav,
                     'motor_status': 'SIM', 'accessory': '',
                 })
             if is_mapper and now - last_scan >= 0.2:

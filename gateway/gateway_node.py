@@ -120,6 +120,11 @@ class GatewayNode(Node):
         self.pub_estop = self.create_publisher(Bool, '/emergency_stop', 10)
         self.pub_explore = self.create_publisher(Bool, '/explore_enable', 10)
         self.pub_goal = self.create_publisher(PoseStamped, '/goal_pose', 10)
+        # Streamed heading bias for Beta's local fuser (robot2_local_nav). The
+        # laptop owns the pose now, so goal-attraction is computed there and
+        # streamed as a velocity bias; the Pi fuses it with ultrasonic
+        # repulsion. The node applies its own staleness deadman on this topic.
+        self.pub_nav_bias = self.create_publisher(Twist, '/cmd_vel_bias', 10)
         self.pub_speed = self.create_publisher(Float32, '/set_speed', 10)
         self.pub_accessory = self.create_publisher(String, '/accessory_cmd', 10)
 
@@ -131,6 +136,7 @@ class GatewayNode(Node):
         s(cmds.CMD_SERVO, self._h_servo)
         s(cmds.CMD_EXPLORE, self._h_explore)
         s(cmds.CMD_GOAL, self._h_goal)
+        s(cmds.CMD_NAV_BIAS, self._h_nav_bias)
         s(cmds.CMD_SPEED, self._h_speed)
         s(cmds.CMD_RESET_MAP, self._h_reset_map)
 
@@ -307,6 +313,13 @@ class GatewayNode(Node):
         ps.pose.position.y = float(env.payload['y'])
         ps.pose.orientation.w = 1.0
         self.pub_goal.publish(ps)
+        return True, 'ok'
+
+    def _h_nav_bias(self, env):
+        t = Twist()
+        t.linear.x = float(env.payload.get('vx', 0.0))
+        t.angular.z = float(env.payload.get('wz', 0.0))
+        self.pub_nav_bias.publish(t)
         return True, 'ok'
 
     def _h_speed(self, env):

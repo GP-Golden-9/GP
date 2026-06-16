@@ -25,6 +25,8 @@ class RobotProfile:
     gas: Dict = field(default_factory=dict)
     footprint: Dict = field(default_factory=dict)
     drive: Dict = field(default_factory=dict)   # wheel kinematics for laptop odom
+    ultrasonic: Dict = field(default_factory=dict)   # front HC-SR04 config
+    goto: Dict = field(default_factory=dict)    # goto gains for laptop heading bias
 
     @property
     def is_esp32(self) -> bool:
@@ -142,6 +144,8 @@ def load_app_config(fleet_path: str | None = None) -> AppConfig:
             gas=rc.get('gas', {}),
             footprint=rc.get('footprint', {}),
             drive=rc.get('drive', {}),
+            ultrasonic=rc.get('ultrasonic', {}),
+            goto=rc.get('goto', {}),
         ))
 
     d = fleet.get('dashboard', {})

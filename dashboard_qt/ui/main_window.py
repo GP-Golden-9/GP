@@ -186,16 +186,28 @@ class MainWindow(QMainWindow):
         self.command_bar.exitRequested.connect(self._confirm_exit)
         self.command_bar.set_active(self.active_id)
 
-        # central: alert banner above the map
+        # central: alert banner (always visible) above a TAB WIDGET. The
+        # OPERATIONS LOG used to be a bottom dock that overlapped the map and
+        # controls when the window was maximized — it now lives in its own tab
+        # beside the map, so nothing overlaps.
+        from PySide6.QtWidgets import QVBoxLayout, QTabWidget
         central = QWidget()
-        from PySide6.QtWidgets import QVBoxLayout
-        lay = QVBoxLayout(central)
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.alert_banner = AlertBanner()
+        outer.addWidget(self.alert_banner)
+
+        self.center_tabs = QTabWidget()
+        self.center_tabs.setDocumentMode(True)
+        map_page = QWidget()
+        lay = QVBoxLayout(map_page)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        self.alert_banner = AlertBanner()
         self.map = MapWidget()
-        lay.addWidget(self.alert_banner)
         lay.addWidget(self.map, 1)
+        self.center_tabs.addTab(map_page, 'MAP')
+        outer.addWidget(self.center_tabs, 1)
         self.setCentralWidget(central)
         self.map.set_active_robot(self.active_id)
         self.map.goalRequested.connect(self._goal_clicked)
@@ -210,6 +222,9 @@ class MainWindow(QMainWindow):
         self.mission.progress.connect(self._log)
         self.mission.waypointActive.connect(self._on_waypoint_active)
         self.mission.missionFinished.connect(self._on_mission_finished)
+        self.mission.biasComputed.connect(self._on_mission_bias)
+        self._nav_goal: tuple[str, float, float] | None = None   # for replan
+        self._nav_replans = 0
         self.map.markerPlaced.connect(
             lambda x, y: self.map.add_marker('PIN', x, y, robot='operator',
                                              t_wall=time.strftime('%H:%M:%S')))
@@ -239,8 +254,7 @@ class MainWindow(QMainWindow):
         self._update_ops_target()
 
         self.drawer = BottomPanel(self.app_cfg.robots)
-        self._dock_drawer = self._dock('OPERATIONS LOG', self.drawer,
-                                       Qt.BottomDockWidgetArea, 'dockDrawer')
+        self.center_tabs.addTab(self.drawer, 'OPERATIONS LOG')
         self.drawer.detections.locateRequested.connect(self.map.center_on)
         self.drawer.detections.clearRequested.connect(self.map.clear_markers)
         self.map.markersChanged.connect(self.drawer.detections.set_markers)
@@ -250,7 +264,6 @@ class MainWindow(QMainWindow):
         self.resizeDocks([self._dock_fleet, self._dock_video], [380, 330],
                          Qt.Vertical)
         self.resizeDocks([self._dock_ops], [330], Qt.Horizontal)
-        self.resizeDocks([self._dock_drawer], [200], Qt.Vertical)
 
         sb = self.statusBar()
         self.sb_nav = QLabel('nav —')
@@ -273,8 +286,7 @@ class MainWindow(QMainWindow):
 
     def _build_menu(self) -> None:
         view = self.menuBar().addMenu('&View')
-        for dock in (self._dock_fleet, self._dock_video, self._dock_ops,
-                     self._dock_drawer):
+        for dock in (self._dock_fleet, self._dock_video, self._dock_ops):
             view.addAction(dock.toggleViewAction())
         view.addSeparator()
         fit = QAction('Fit map', self)
@@ -405,33 +417,64 @@ class MainWindow(QMainWindow):
     def _goal_clicked(self, x: float, y: float) -> None:
         """NAVIGATE click: A* over the occupancy grid → waypoint mission.
 
-        The robots only have straight-line goto controllers — sending a far
-        goal directly would drive them into walls. The console plans the
-        safe route (through doors, away from walls) and feeds it leg by leg."""
-        pose = self._aligned_pose(self.active_id)
-        if self._grid is None or pose is None:
-            # no map / no odometry yet → single direct goal (short-range only)
-            self._send_goal_world(x, y)
+        The console plans the safe route around MAPPED obstacles (through
+        doors, away from walls) and drives it leg by leg; Beta's local fuser
+        additionally dodges UNMAPPED obstacles with its ultrasonics. Beta has
+        no lidar, so map-aware nav needs it ALIGNED to the map (SET POSE)."""
+        rid = self.active_id
+        if rid == 'robot2' and not self._aligned.get(rid, False):
+            msg = 'Align Beta with SET POSE for map-aware navigation'
+            self.statusBar().showMessage(msg, 5000)
+            self._log(msg + ' — meanwhile AUTONOMOUS runs reactive avoidance')
+            return
+        status = self._plan_and_run(x, y)
+        if status == 'no_map':
+            if rid == 'robot2':
+                self.statusBar().showMessage(
+                    'No map yet — Beta runs reactive avoidance only', 5000)
+                self._log('no map — start Alpha mapping for Beta go-to-goal')
+                return
+            self._send_goal_world(x, y)            # Alpha: short direct goal
             self.map.set_goal(x, y)
             self._log(f'goal (direct, no map yet) → ({x:.2f}, {y:.2f})')
             return
+        if status == 'no_path':
+            self.statusBar().showMessage(
+                'NO PATH — target unreachable (blocked or unexplored)', 4000)
+            self._log(f'NO PATH to ({x:.2f}, {y:.2f}) — blocked or unexplored')
+            return
+        self._nav_goal = (rid, x, y)               # remember for replan-on-stuck
+        self._nav_replans = 0
+
+    def _plan_and_run(self, gx: float, gy: float) -> str:
+        """A* from the active robot's current aligned pose → (gx,gy) and run
+        the mission. Returns 'ok' | 'no_path' | 'no_map'. Reused by goal
+        clicks and replan-on-stuck so a stuck robot re-routes from where it is."""
+        pose = self._aligned_pose(self.active_id)
+        if self._grid is None or pose is None:
+            return 'no_map'
         res, ox, oy = self._grid_meta
-        t0 = time.monotonic()
         prof = self.app_cfg.profile(self.active_id)
-        path = plan_path(self._grid, res, ox, oy, (pose.x, pose.y), (x, y),
+        t0 = time.monotonic()
+        path = plan_path(self._grid, res, ox, oy, (pose.x, pose.y), (gx, gy),
                          hard_radius_m=prof.plan_hard_radius_m,
                          soft_extra_m=prof.plan_soft_extra_m)
         dt_ms = (time.monotonic() - t0) * 1000
         if path is None:
-            self.statusBar().showMessage(
-                'NO PATH — target unreachable (blocked or unexplored)', 4000)
-            self._log(f'NO PATH to ({x:.2f}, {y:.2f}) — blocked or unexplored '
-                      f'[planned in {dt_ms:.0f} ms]')
-            return
+            return 'no_path'
         self.map.set_goal(*path[-1])
         self.map.set_path((pose.x, pose.y), path)
         self._log(f'route planned: {len(path)} leg(s), {dt_ms:.0f} ms')
-        self.mission.start(self.active_id, path)
+        self.mission.start(self.active_id, path, gains=prof.goto)
+        return 'ok'
+
+    def _on_mission_bias(self, vx: float, wz: float) -> None:
+        """Stream the mission's heading bias to a local-fuser robot (Beta).
+        Alpha drives from CMD_GOAL instead, so it ignores this."""
+        rid = self.mission.robot_id
+        if rid == 'robot2' and rid in self.cmd:
+            self.cmd[rid].send(cmds.CMD_NAV_BIAS,
+                               {'vx': round(vx, 3), 'wz': round(wz, 3)})
 
     def _send_goal_world(self, x: float, y: float) -> None:
         # shared frame → the executing robot's own odom frame
@@ -446,8 +489,24 @@ class MainWindow(QMainWindow):
 
     def _on_mission_finished(self, reason: str) -> None:
         self.map.clear_path()
+        self._on_mission_bias(0.0, 0.0)            # stop streaming bias
         if reason == 'arrived':
             self.map.clear_goal()
+            self._nav_goal = None
+            return
+        # Only a no-progress TIMEOUT triggers a replan (not operator cancels /
+        # mode changes). Re-route around the obstacle from the current pose,
+        # bounded so an unreachable goal can't loop forever.
+        if (reason.startswith('timeout') and self._nav_goal
+                and self._nav_replans < 3
+                and self._nav_goal[0] == self.active_id):
+            _, gx, gy = self._nav_goal
+            self._nav_replans += 1
+            self._log(f'mission {reason} — replanning from current pose '
+                      f'({self._nav_replans}/3)')
+            if self._plan_and_run(gx, gy) == 'ok':
+                return
+        self._nav_goal = None
 
     def _pose_picked(self, x: float, y: float, th: float) -> None:
         odom = self.state[self.active_id].telemetry.get('odom') or \
@@ -507,7 +566,8 @@ class MainWindow(QMainWindow):
         prof = self.app_cfg.profile(self.active_id)
         self.ops.set_target(prof.name, prof.id,
                             has_tools=(prof.id == 'robot2'),
-                            has_gas=prof.is_esp32)
+                            has_gas=prof.is_esp32,
+                            has_ultra=bool(prof.ultrasonic.get('enabled')))
 
     def _switch_model(self, path: str) -> None:
         if self.yolo is not None:
@@ -536,7 +596,7 @@ class MainWindow(QMainWindow):
         pose = self._aligned_pose(robot_id)
         if pose is not None:
             self.map.update_robot(robot_id, pose.x, pose.y, pose.th)
-            self.mission.update_pose(robot_id, pose.x, pose.y)
+            self.mission.update_pose(robot_id, pose.x, pose.y, pose.th)
             card = self.fleet.cards.get(robot_id)
             if card:
                 import math
@@ -551,6 +611,11 @@ class MainWindow(QMainWindow):
         servo = payload.get('servo_deg')
         if servo is not None:
             self.ops.set_servo_feedback(int(servo))
+        if 'us' in payload:                       # front ultrasonics (Beta)
+            uc = self.app_cfg.profile(robot_id).ultrasonic
+            self.ops.set_ultrasonic(payload.get('us'),
+                                    stop_cm=uc.get('stop_cm', 25),
+                                    slow_cm=uc.get('slow_cm', 60))
 
         now = time.monotonic()
         if now - self._last_sb >= 0.25:
@@ -841,12 +906,19 @@ class MainWindow(QMainWindow):
         self._settings().setValue('mute_voice', checked)
         self._log('voice announcements ' + ('MUTED' if checked else 'on'))
 
+    # Bump when the default dock layout changes so stale saved arrangements
+    # (e.g. a previous session that squeezed the OPS dock to a sliver) are
+    # discarded instead of restored over the new default.
+    LAYOUT_VERSION = 2
+
     def _settings(self) -> QSettings:
         return QSettings('GP', 'OperationsCenter')
 
     def _restore_layout(self) -> None:
         self._default_state = self.saveState()
         s = self._settings()
+        if s.value('layout_version', 0, type=int) != self.LAYOUT_VERSION:
+            return                      # schema changed → keep the fresh default
         geo = s.value('geometry')
         state = s.value('windowState')
         if geo is not None:
@@ -856,9 +928,34 @@ class MainWindow(QMainWindow):
 
     def _reset_layout(self) -> None:
         self.restoreState(self._default_state)
-        for dock in (self._dock_fleet, self._dock_video, self._dock_ops,
-                     self._dock_drawer):
+        for dock in (self._dock_fleet, self._dock_video, self._dock_ops):
             dock.show()
+        self._apply_dock_sizes()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # resizeDocks in __init__ runs BEFORE showMaximized, so the maximize
+        # redistributes the width and collapses the right OPS dock to a sliver.
+        # Enforce the column widths once, AFTER the window is actually shown.
+        if not getattr(self, '_docks_sized', False):
+            self._docks_sized = True
+            QTimer.singleShot(0, self._apply_dock_sizes)
+
+    def _apply_dock_sizes(self) -> None:
+        # Clamp the DOCK widths directly (a min on the inner panel doesn't
+        # propagate to the dock area reliably), then resize. The OPS dock kept
+        # collapsing to a sliver otherwise.
+        self._dock_fleet.setMinimumWidth(286)
+        self._dock_ops.setMinimumWidth(320)
+        self.resizeDocks([self._dock_fleet], [300], Qt.Horizontal)
+        self.resizeDocks([self._dock_ops], [340], Qt.Horizontal)
+        QTimer.singleShot(0, self._relax_dock_limits)
+
+    def _relax_dock_limits(self) -> None:
+        # Let the operator resize them afterwards, but never below a usable
+        # floor (keeps the joystick + proximity readout legible).
+        self._dock_fleet.setMinimumWidth(250)
+        self._dock_ops.setMinimumWidth(312)
 
     def _confirm_exit(self) -> None:
         if QMessageBox.question(
@@ -876,6 +973,7 @@ class MainWindow(QMainWindow):
         s = self._settings()
         s.setValue('geometry', self.saveGeometry())
         s.setValue('windowState', self.saveState())
+        s.setValue('layout_version', self.LAYOUT_VERSION)
         for client in set(self.cmd.values()) | set(self.links.values()):
             try:
                 client.stop()

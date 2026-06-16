@@ -23,13 +23,17 @@ CMD_PUMP    = 'cmd.pump'     # {on: bool}
 CMD_SERVO   = 'cmd.servo'    # {deg: int}
 CMD_EXPLORE = 'cmd.explore'  # {enable: bool}
 CMD_GOAL    = 'cmd.goal'     # {x: float, y: float}
+CMD_NAV_BIAS = 'cmd.nav_bias'  # {vx: float, wz: float} — laptop heading bias
+                               # streamed ~10 Hz to Beta's local fuser; the Pi
+                               # fuses it with ultrasonic repulsion. A keepalive
+                               # stream like CMD_DRIVE (NOT exactly-once).
 CMD_SPEED   = 'cmd.speed'    # {value: float 0..1}
 CMD_PING    = 'cmd.ping'     # {} — link liveness check
 CMD_RESET_MAP = 'cmd.reset_map'  # {} — restart SLAM to clear map
 
 ALL_COMMANDS = frozenset({
     CMD_DRIVE, CMD_ESTOP, CMD_PUMP, CMD_SERVO, CMD_EXPLORE, CMD_GOAL,
-    CMD_SPEED, CMD_PING, CMD_RESET_MAP,
+    CMD_NAV_BIAS, CMD_SPEED, CMD_PING, CMD_RESET_MAP,
 })
 
 # Commands that must execute exactly once (retries must be deduped):
