@@ -53,7 +53,8 @@ class LocalOdom:
         self.prev_enc = None
         self.last_t = None
 
-    def update(self, enc: Sequence, gyro: Optional[Sequence]) -> Optional[dict]:
+    def update(self, enc: Sequence, gyro: Optional[Sequence],
+               heading: Optional[float] = None) -> Optional[dict]:
         if not enc or len(enc) < 4:
             return None
         now = time.monotonic()
@@ -96,6 +97,29 @@ class LocalOdom:
         d_right = (d_fr + d_rr) / 2.0
         distance = (d_left + d_right) / 2.0 * self.m_per_tick
         d_theta_enc = ((d_right - d_left) * self.m_per_tick) / self.wheel_base
+
+        if heading is not None:
+            # The robot integrated the heading at 50 Hz — far better than our
+            # 20 Hz gyro integration. Use it directly; only discount distance
+            # when the wheels claim a lot more rotation than the body actually
+            # turned (carpet scrub).
+            new_theta = math.atan2(math.sin(heading), math.cos(heading))
+            d_theta = math.atan2(math.sin(new_theta - self.theta),
+                                 math.cos(new_theta - self.theta))
+            w_enc = d_theta_enc / dt if dt > 0 else 0.0
+            w_body = d_theta / dt if dt > 0 else 0.0
+            if ticks_total > 0 and abs(w_enc - w_body) > self.slip_gate:
+                distance *= min(1.0, (abs(w_body) + 0.05) / (abs(w_enc) + 0.05))
+            self.theta = new_theta
+            self.x += distance * math.cos(self.theta)
+            self.y += distance * math.sin(self.theta)
+            self.v = distance / dt if dt > 0 else 0.0
+            self.w = d_theta / dt if dt > 0 else 0.0
+            self.prev_enc = list(enc)
+            self.last_t = now
+            return {'x': round(self.x, 4), 'y': round(self.y, 4),
+                    'th': round(self.theta, 4),
+                    'v': round(self.v, 3), 'w': round(self.w, 3)}
 
         if self._imu_dead:
             d_theta = d_theta_enc

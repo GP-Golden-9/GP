@@ -73,6 +73,10 @@ class RobotState(QObject):
         # present, the pose is reconstructed here from the raw enc+gyro in the
         # telemetry instead of being computed on the Pi — see local_odom.py.
         self.local_odom = None
+        # Bumped on every telemetry frame. The UI renders the LATEST telemetry
+        # on a timer keyed off this, instead of doing heavy map/widget work per
+        # frame (which backed up the UI thread and lagged the map + readouts).
+        self._tele_rev = 0
         # capture-clock offset: min(recv_local − cap_t_mono) over recent frames
         self._video_offset: Optional[float] = None
 
@@ -92,17 +96,18 @@ class RobotState(QObject):
             if env.run_id and env.run_id != self.run_id_seen:
                 self.local_odom.reset()
             pose = self.local_odom.update(payload.get('enc'),
-                                          payload.get('gyro'))
+                                          payload.get('gyro'),
+                                          payload.get('heading'))
             if pose is not None:
                 payload = dict(payload)
                 payload['odom'] = pose
         self.telemetry = payload
         self.run_id_seen = env.run_id
+        self._tele_rev += 1
         estop = bool(payload.get('estop', False))
         if estop != self.estop:
             self.estop = estop
             self.estopChanged.emit(estop)
-        self.telemetryChanged.emit(payload)
 
     def on_scan(self, env) -> None:
         self.streams['scan'].touch(env.seq)

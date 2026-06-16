@@ -23,7 +23,7 @@ import zlib
 from dataclasses import dataclass, field
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QImage, QPainter,
                            QPainterPath, QPen, QPixmap, qRgb)
 from PySide6.QtWidgets import (QFrame, QGraphicsPathItem, QGraphicsPixmapItem,
@@ -96,6 +96,12 @@ def _blend_angle(a: float, b: float, alpha: float) -> float:
     return a + alpha * d
 
 
+# Markers accumulate over a long session; an unbounded scene slowly lags the
+# 30 Hz render. Cap the count and expire stale ones.
+MARKER_MAX = 40
+MARKER_TTL_S = 120.0
+
+
 @dataclass
 class Marker:
     kind: str
@@ -104,6 +110,7 @@ class Marker:
     conf: object
     t_wall: str
     robot: str
+    t_mono: float = 0.0
     items: list = field(default_factory=list)
 
 
@@ -311,10 +318,16 @@ class MapWidget(QWidget):
         self._active_id = ''
         self._markers: list[Marker] = []
         self._have_grid = False
+        self._grid_bounds: tuple | None = None   # (x0,y0,x1,y1) world extent
         self._follow = False
         # auto-fit keeps the whole map filling the canvas (first map, dock
         # resizes, map growth) until the operator zooms/pans manually
         self._user_nav = False
+
+        self._marker_sweep = QTimer(self)
+        self._marker_sweep.setInterval(5000)        # expire stale markers
+        self._marker_sweep.timeout.connect(self._expire_markers)
+        self._marker_sweep.start()
 
         self._build_overlay()
         self.canvas.cursorMoved.connect(self._on_cursor)
@@ -484,6 +497,7 @@ class MapWidget(QWidget):
         t.scale(res, -res)
         self._grid_item.setTransform(t)
         self._have_grid = True
+        self._grid_bounds = (ox, oy, ox + w * res, oy + h * res)
 
         self._rebuild_gridlines(ox, oy, w * res, h * res)
         # lock the scene to the map (+ pan margin) — see _Canvas.__init__
@@ -691,6 +705,17 @@ class MapWidget(QWidget):
     def add_marker(self, kind: str, x: float, y: float, conf=None,
                    robot: str = '', t_wall: str = '') -> None:
         kind = kind.upper()
+        # Don't drop markers OUTSIDE the mapped area. Detections are projected
+        # from the robot's (drifting) pose, so a bad pose can fling them off
+        # the map — clutter that's meaningless. Once a map exists, only accept
+        # markers inside its extent (small margin). PIN = operator click, which
+        # is on the map by construction, so it's always allowed.
+        if (kind != 'PIN' and self._grid_bounds is not None):
+            x0, y0, x1, y1 = self._grid_bounds
+            m_ = 0.25
+            if not (x0 - m_ <= x <= x1 + m_ and y0 - m_ <= y <= y1 + m_):
+                return
+        now = time.monotonic()
         merge_r = MARKER_MERGE_M.get(kind, 0.6)
         for m in self._markers:
             if m.kind == kind and math.hypot(m.x - x, m.y - y) < merge_r:
@@ -701,13 +726,44 @@ class MapWidget(QWidget):
                     m.conf = max(m.conf, conf) if isinstance(m.conf, int) else conf
                 m.t_wall = t_wall or m.t_wall
                 m.robot = robot or m.robot
+                m.t_mono = now
                 self._draw_marker_items(m)
                 self.markersChanged.emit(list(self._markers))
                 return
-        m = Marker(kind=kind, x=x, y=y, conf=conf, t_wall=t_wall, robot=robot)
+        m = Marker(kind=kind, x=x, y=y, conf=conf, t_wall=t_wall, robot=robot,
+                   t_mono=now)
         self._markers.append(m)
+        # Bound the scene: drop the oldest when over the cap (keeps the render
+        # fast over a long session). PINs are operator anchors — keep them.
+        if len(self._markers) > MARKER_MAX:
+            victim = next((mk for mk in self._markers if mk.kind != 'PIN'),
+                          self._markers[0])
+            self._remove_marker(victim)
         self._draw_marker_items(m)
         self.markersChanged.emit(list(self._markers))
+
+    def latest_marker(self, kind: str):
+        """Most-recently-updated marker of a kind (for mission targeting)."""
+        kind = kind.upper()
+        ms = [m for m in self._markers if m.kind == kind]
+        return max(ms, key=lambda m: m.t_mono) if ms else None
+
+    def _remove_marker(self, m: Marker) -> None:
+        sc = self.canvas.scene()
+        for it in m.items:
+            sc.removeItem(it)
+        m.items.clear()
+        if m in self._markers:
+            self._markers.remove(m)
+
+    def _expire_markers(self) -> None:
+        now = time.monotonic()
+        stale = [m for m in self._markers
+                 if m.kind != 'PIN' and now - m.t_mono > MARKER_TTL_S]
+        for m in stale:
+            self._remove_marker(m)
+        if stale:
+            self.markersChanged.emit(list(self._markers))
 
     def _draw_marker_items(self, m: Marker) -> None:
         sc = self.canvas.scene()

@@ -54,7 +54,9 @@ from ui.map.planner import plan_path
 from ui.map.projection import (DIST_K, DIST_K_BY_KIND, FrameOffset, Pose,
                                apply_offset, detection_to_world,
                                offset_from_alignment, world_point_to_robot)
+from ui.master_mission import MasterMission
 from ui.mission import MissionExecutor
+from ui.mission_panel import MissionPanel
 from ui.ops_panel import OpsPanel
 from ui.video_panel import VideoPanel
 
@@ -164,7 +166,9 @@ class MainWindow(QMainWindow):
                 self.links[prof.id] = link
                 self.cmd[prof.id] = client
 
-            st.telemetryChanged.connect(partial(self._on_telemetry, prof.id))
+            # NOTE: telemetry is NOT rendered per-frame (that backed up the UI
+            # thread and lagged the map + readouts). _render_telemetry runs the
+            # heavy update on a 30 Hz timer using the LATEST frame — see below.
             st.scanChanged.connect(partial(self._on_scan, prof.id))
             st.mapChanged.connect(partial(self._on_map, prof.id))
             st.healthChanged.connect(partial(self._on_health, prof.id))
@@ -200,6 +204,7 @@ class MainWindow(QMainWindow):
 
         self.center_tabs = QTabWidget()
         self.center_tabs.setDocumentMode(True)
+        self.center_tabs.setFocusPolicy(Qt.NoFocus)   # never swallow WASD
         map_page = QWidget()
         lay = QVBoxLayout(map_page)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -258,6 +263,21 @@ class MainWindow(QMainWindow):
         self.drawer.detections.locateRequested.connect(self.map.center_on)
         self.drawer.detections.clearRequested.connect(self.map.clear_markers)
         self.map.markersChanged.connect(self.drawer.detections.set_markers)
+
+        # ── Master/Slave mission demo (pure dashboard simulation) ──
+        self._sim_robots: set[str] = set()       # robots the mission animates
+        self.master_mission = MasterMission(parent=self)
+        self.mission_panel = MissionPanel()
+        self.center_tabs.addTab(self.mission_panel, 'MISSION')
+        self.mission_panel.startRequested.connect(self._mission_start)
+        self.mission_panel.nextRequested.connect(self.master_mission.next_phase)
+        self.mission_panel.abortRequested.connect(self.master_mission.abort)
+        self.mission_panel.autoChanged.connect(self.master_mission.set_auto)
+        self.master_mission.log.connect(self.mission_panel.log_line)
+        self.master_mission.phaseChanged.connect(self.mission_panel.set_phase)
+        self.master_mission.statusChanged.connect(self.mission_panel.set_status)
+        self.master_mission.animate.connect(self._mission_animate)
+        self.master_mission.finished.connect(self._mission_finished)
 
         self.resizeDocks([self._dock_fleet, self._dock_video], [300, 330],
                          Qt.Horizontal)
@@ -339,6 +359,36 @@ class MainWindow(QMainWindow):
         self._key_timer.setInterval(int(1000 / cmds.DRIVE_STREAM_HZ))
         self._key_timer.timeout.connect(self._keyboard_tick)
 
+        # Render telemetry (map pose, fleet cards, ultrasonic readout, mission)
+        # off the LATEST frame at a fixed 30 Hz, decoupled from arrival. Heavy
+        # per-frame rendering used to run inside the telemetry callback and
+        # back up the UI thread, so the map and readouts trailed real motion.
+        self._tele_render_rev: dict[str, int] = {}
+        self._tele_timer = QTimer(self)
+        self._tele_timer.setInterval(33)            # ~30 Hz
+        self._tele_timer.timeout.connect(self._render_telemetry)
+        self._tele_timer.start()
+
+        # AUTONOMOUS safety heartbeat: while armed, re-affirm at 2 Hz so the
+        # robot's local nav stops if this console disappears.
+        self._auto_robot: str | None = None
+        self._auto_hb = QTimer(self)
+        self._auto_hb.setInterval(500)              # 2 Hz
+        self._auto_hb.timeout.connect(self._autonomy_heartbeat)
+        self._auto_hb.start()
+
+    def _render_telemetry(self) -> None:
+        for rid, st in self.state.items():
+            if rid in self._sim_robots:
+                continue            # mission is animating this icon — don't fight it
+            if not st.telemetry:
+                continue
+            rev = st._tele_rev
+            if self._tele_render_rev.get(rid) == rev:
+                continue                            # no new frame → skip
+            self._tele_render_rev[rid] = rev
+            self._on_telemetry(rid, st.telemetry)
+
     def _start(self) -> None:
         for link in self.links.values():
             link.start()
@@ -387,6 +437,7 @@ class MainWindow(QMainWindow):
         self._log(f'E-STOP {"ENGAGED" if engage else "released"} → {self.active_id}')
 
     def _all_stop(self) -> None:
+        self.master_mission.abort()
         self.mission.cancel('cancelled by ALL STOP')
         for rid, client in self.cmd.items():
             client.estop(True)
@@ -397,9 +448,20 @@ class MainWindow(QMainWindow):
         self.mission.cancel('cancelled by mode change')
         enable = (mode == 'auto')
         self._client().send(cmds.CMD_EXPLORE, {'enable': enable})
+        # Track the armed robot so the heartbeat keeps re-affirming AUTONOMOUS.
+        # If this console goes away, the heartbeat stops and the robot's local
+        # nav times out and STOPS (it won't keep wandering unattended).
+        self._auto_robot = self.active_id if enable else None
         if not enable:
             self._stop()
         self._log(f'{self.active_id} drive mode → {mode.upper()}')
+
+    def _autonomy_heartbeat(self) -> None:
+        """Re-affirm AUTONOMOUS ~2 Hz while armed. The robot's local nav stops
+        if this stream stops (console closed/crashed/WiFi lost) — safety."""
+        rid = self._auto_robot
+        if rid and rid in self.cmd:
+            self.cmd[rid].send(cmds.CMD_EXPLORE, {'enable': True})
 
     def _speed_changed(self, value: float) -> None:
         prefs = self.app_cfg.prefs
@@ -480,6 +542,72 @@ class MainWindow(QMainWindow):
         # shared frame → the executing robot's own odom frame
         rx, ry = world_point_to_robot(x, y, self._offsets[self.active_id])
         self._client().send(cmds.CMD_GOAL, {'x': round(rx, 3), 'y': round(ry, 3)})
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Master/Slave mission DEMO — pure dashboard simulation (no real CMD_*)
+    # ══════════════════════════════════════════════════════════════════════
+    def _map_center(self) -> tuple[float, float]:
+        gb = getattr(self.map, '_grid_bounds', None)
+        if gb:
+            x0, y0, x1, y1 = gb
+            return ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+        return (0.0, 0.0)
+
+    def _mission_start(self) -> None:
+        """Resolve targets from live markers (fire = latest FIRE; object =
+        latest detection) with placeholder fallbacks, then run the SIMULATED
+        master/slave mission. Nothing is transmitted to any robot."""
+        a = self._aligned_pose('robot1')
+        b = self._aligned_pose('robot2')
+        alpha_pos = (a.x, a.y) if a else (0.0, 0.0)
+        beta_pos = (b.x, b.y) if b else (0.6, 0.0)
+        cx, cy = self._map_center()
+        fire_m = self.map.latest_marker('FIRE') or self.map.latest_marker('PIN')
+        obj_m = (self.map.latest_marker('HUMAN') or self.map.latest_marker('CAT')
+                 or self.map.latest_marker('DOG'))
+        fire_xy = (fire_m.x, fire_m.y) if fire_m else (cx + 1.2, cy + 0.5)
+        obj_xy = (obj_m.x, obj_m.y) if obj_m else (cx - 1.2, cy - 0.5)
+        fsrc = 'detected' if self.map.latest_marker('FIRE') else \
+            ('PIN' if self.map.latest_marker('PIN') else 'placeholder')
+        osrc = 'detected' if obj_m else 'placeholder'
+        self.mission_panel.log_line(
+            f'targets — fire: {fsrc} ({fire_xy[0]:+.1f},{fire_xy[1]:+.1f}), '
+            f'object: {osrc} ({obj_xy[0]:+.1f},{obj_xy[1]:+.1f})')
+        self.master_mission.configure(alpha_pos, (0.0, 0.0), beta_pos,
+                                      obj_xy, fire_xy)
+        self.mission_panel.set_running(True)
+        self.master_mission.start()
+
+    def _mission_animate(self, rid: str, x0: float, y0: float,
+                         x1: float, y1: float, secs: float) -> None:
+        """Glide a robot icon A→B on the map (simulation only)."""
+        self._sim_robots.add(rid)
+        prev = getattr(self, '_mission_anim_timer', None)
+        if prev is not None:
+            prev.stop()
+        steps = max(1, int(secs * 20))
+        th = math.atan2(y1 - y0, x1 - x0)
+        cnt = {'i': 0}
+        t = QTimer(self)
+        t.setInterval(50)
+
+        def tick():
+            cnt['i'] += 1
+            f = min(1.0, cnt['i'] / steps)
+            self.map.update_robot(rid, x0 + (x1 - x0) * f,
+                                  y0 + (y1 - y0) * f, th)
+            if f >= 1.0:
+                t.stop()
+        t.timeout.connect(tick)
+        t.start()
+        self._mission_anim_timer = t
+
+    def _mission_finished(self) -> None:
+        prev = getattr(self, '_mission_anim_timer', None)
+        if prev is not None:
+            prev.stop()
+        self._sim_robots.clear()        # release icons back to live telemetry
+        self.mission_panel.set_running(False)
 
     def _on_waypoint_active(self, idx: int, total: int, x: float, y: float) -> None:
         pose = self._aligned_pose(self.active_id)
@@ -837,6 +965,14 @@ class MainWindow(QMainWindow):
           keystrokes (combo box, line edit, spin box, editable text) has
           focus, so typing never drives the robot.
         """
+        # If the window loses focus while a drive key is held, its KeyRelease
+        # is delivered elsewhere and the key stays "stuck" in self._keys — the
+        # robot keeps driving and the keyboard then feels dead/erratic until a
+        # full reset. Release everything on deactivation (also a safety stop).
+        if e.type() == e.Type.WindowDeactivate and self._keys:
+            self._keys.clear()
+            self._key_timer.stop()
+            self.ops.keyboard_vector(0.0, 0.0)
         if e.type() == e.Type.KeyPress and e.key() == Qt.Key_Escape:
             self.keyPressEvent(e)
             return True
@@ -974,6 +1110,17 @@ class MainWindow(QMainWindow):
         s.setValue('geometry', self.saveGeometry())
         s.setValue('windowState', self.saveState())
         s.setValue('layout_version', self.LAYOUT_VERSION)
+        # SAFETY: disarm autonomy + stop every robot BEFORE tearing down the
+        # links, so closing the console never leaves a robot wandering. The
+        # robot-side heartbeat timeout is the backstop if this doesn't land.
+        self._auto_robot = None
+        for rid, client in self.cmd.items():
+            try:
+                client.send(cmds.CMD_EXPLORE, {'enable': False})
+                client.drive(0.0, 0.0)
+            except Exception:
+                pass
+        time.sleep(0.25)                    # let the stop/disarm flush
         for client in set(self.cmd.values()) | set(self.links.values()):
             try:
                 client.stop()

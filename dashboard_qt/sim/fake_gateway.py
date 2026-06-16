@@ -393,6 +393,7 @@ def main() -> int:
                              'th': round(robot.th, 4),
                              'v': round(robot.v, 3), 'w': round(robot.w, 3)},
                     'us': {'l': round(us_l, 2), 'r': round(us_r, 2)},
+                    'heading': round(robot.th, 4),   # robot-integrated yaw
                     'pump': robot.pump, 'servo_deg': robot.servo,
                     'estop': robot.estop, 'nav_status': nav,
                     'motor_status': 'SIM', 'accessory': '',

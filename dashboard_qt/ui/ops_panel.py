@@ -178,6 +178,7 @@ class OpsPanel(QWidget):
             pv.addWidget(val, row, 2)
             self.prox_bars[key] = bar
             self.prox_lbls[key] = val
+        self._prox_band: dict = {'l': None, 'r': None}   # restyle only on change
         root.addWidget(self.prox_box)
         self.prox_box.setVisible(False)
 
@@ -202,33 +203,39 @@ class OpsPanel(QWidget):
     def set_ultrasonic(self, us: dict | None, stop_cm: float = 25,
                        slow_cm: float = 60) -> None:
         """Live front-left/right distance bars: red under the hard-stop
-        threshold, amber in the slow-down zone, green clear."""
+        threshold, amber in the slow-down zone, green clear.
+
+        Called at the telemetry rate (~20 Hz). setValue/setText are cheap, but
+        setStyleSheet forces a full style re-polish — doing it every frame
+        backed up the UI thread and lagged the map. So restyle ONLY when the
+        colour band actually changes (rare)."""
         for key in ('l', 'r'):
             bar = self.prox_bars[key]
             lbl = self.prox_lbls[key]
             m = us.get(key) if us else None
-            if m is None:
-                bar.setValue(0)
-                bar.setStyleSheet('')
-                lbl.setText('— no echo')
-                lbl.setStyleSheet(f'color:{theme.MUTED}; '
-                                  f'font-family:{theme.MONO}; font-size:12px;')
-                continue
-            cm = m * 100.0
-            bar.setValue(max(0, min(int(cm), 150)))
-            if cm <= stop_cm:
-                color = theme.BAD
+            cm = None if m is None else m * 100.0
+            if cm is None:
+                band, color = 'none', theme.MUTED
+            elif cm <= stop_cm:
+                band, color = 'stop', theme.BAD
             elif cm <= slow_cm:
-                color = theme.WARN
+                band, color = 'slow', theme.WARN
             else:
-                color = theme.GOOD
-            bar.setStyleSheet(
-                f'QProgressBar{{border:1px solid {theme.BORDER};'
-                f'border-radius:4px;background:#111;}} '
-                f'QProgressBar::chunk{{background:{color};border-radius:3px;}}')
-            lbl.setText(f'{cm:.0f} cm')
-            lbl.setStyleSheet(f'color:{color}; font-family:{theme.MONO}; '
-                              'font-weight:700; font-size:12px;')
+                band, color = 'clear', theme.GOOD
+
+            if band != self._prox_band[key]:        # expensive — only on change
+                self._prox_band[key] = band
+                bar.setStyleSheet('' if band == 'none' else (
+                    f'QProgressBar{{border:1px solid {theme.BORDER};'
+                    f'border-radius:4px;background:#111;}} '
+                    f'QProgressBar::chunk{{background:{color};border-radius:3px;}}'))
+                lbl.setStyleSheet(f'color:{color}; font-family:{theme.MONO}; '
+                                  f'font-size:12px;'
+                                  + ('' if band == 'none' else ' font-weight:700;'))
+
+            # cheap per-frame updates
+            bar.setValue(0 if cm is None else max(0, min(int(cm), 150)))
+            lbl.setText('— no echo' if cm is None else f'{cm:.0f} cm')
 
     def set_gas(self, value: int, alarm: bool, warn_at: int = 2000,
                 alarm_at: int = 3000) -> None:
