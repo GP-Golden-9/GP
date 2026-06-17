@@ -272,10 +272,14 @@ class MainWindow(QMainWindow):
         self.mission_panel.startRequested.connect(self._mission_start)
         self.mission_panel.nextRequested.connect(self.master_mission.next_phase)
         self.mission_panel.abortRequested.connect(self.master_mission.abort)
+        self.mission_panel.interruptRequested.connect(
+            self.master_mission.interrupt_action)
         self.mission_panel.autoChanged.connect(self.master_mission.set_auto)
         self.master_mission.log.connect(self.mission_panel.log_line)
         self.master_mission.phaseChanged.connect(self.mission_panel.set_phase)
         self.master_mission.statusChanged.connect(self.mission_panel.set_status)
+        self.master_mission.actionPending.connect(
+            self.mission_panel.set_action_pending)
         self.master_mission.animate.connect(self._mission_animate)
         self.master_mission.finished.connect(self._mission_finished)
 
@@ -559,8 +563,12 @@ class MainWindow(QMainWindow):
         master/slave mission. Nothing is transmitted to any robot."""
         a = self._aligned_pose('robot1')
         b = self._aligned_pose('robot2')
+        g = self._aligned_pose('robot3')
         alpha_pos = (a.x, a.y) if a else (0.0, 0.0)
         beta_pos = (b.x, b.y) if b else (0.6, 0.0)
+        # Gamma is the esp32 inspector — usually no map pose; start it beside
+        # the others so it visibly drives in for the gas reading.
+        gamma_pos = (g.x, g.y) if g else (alpha_pos[0] + 0.4, alpha_pos[1] - 0.4)
         cx, cy = self._map_center()
         fire_m = self.map.latest_marker('FIRE') or self.map.latest_marker('PIN')
         obj_m = (self.map.latest_marker('HUMAN') or self.map.latest_marker('CAT')
@@ -574,7 +582,7 @@ class MainWindow(QMainWindow):
             f'targets — fire: {fsrc} ({fire_xy[0]:+.1f},{fire_xy[1]:+.1f}), '
             f'object: {osrc} ({obj_xy[0]:+.1f},{obj_xy[1]:+.1f})')
         self.master_mission.configure(alpha_pos, (0.0, 0.0), beta_pos,
-                                      obj_xy, fire_xy)
+                                      gamma_pos, obj_xy, fire_xy)
         self.mission_panel.set_running(True)
         self.master_mission.start()
 

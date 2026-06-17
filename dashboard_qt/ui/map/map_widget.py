@@ -33,7 +33,9 @@ from PySide6.QtWidgets import (QFrame, QGraphicsPathItem, QGraphicsPixmapItem,
 
 from ui import theme
 
-MODE_NAV, MODE_POSE, MODE_MARK = 'nav', 'pose', 'mark'
+MODE_NAV, MODE_POSE, MODE_MARK, MODE_DEL = 'nav', 'pose', 'mark', 'del'
+MARKER_SUPPRESS_S = 600.0      # after the operator removes a wrong detection,
+                               # ignore re-detections of it for this long
 MIN_PPM, MAX_PPM = 12, 900
 TRAIL_MAX_POINTS = 400
 TRAIL_MIN_STEP_M = 0.04
@@ -88,7 +90,8 @@ class _RobotLayer:
 # Display smoothing: poses arrive at ~7-20 Hz in discrete steps; blending
 # the DRAWN pose toward the latest truth removes the jerky arrow without
 # touching the raw pose used for planning and missions.
-POSE_SMOOTH_ALPHA = 0.35
+POSE_SMOOTH_ALPHA = 0.75   # higher = the icon tracks the live pose faster
+                           # (0.35 eased toward it and read as movement "delay")
 
 
 def _blend_angle(a: float, b: float, alpha: float) -> float:
@@ -317,6 +320,7 @@ class MapWidget(QWidget):
         self._robots: dict[str, _RobotLayer] = {}
         self._active_id = ''
         self._markers: list[Marker] = []
+        self._suppressed: list[tuple] = []       # (kind,x,y,until) removed by operator
         self._have_grid = False
         self._grid_bounds: tuple | None = None   # (x0,y0,x1,y1) world extent
         self._follow = False
@@ -359,9 +363,11 @@ class MapWidget(QWidget):
                                            'drag = position + heading, '
                                            'plain click = position only')
         self.btn_mark = tool('◈ MARKER', 'Click to drop a manual marker')
+        self.btn_del = tool('⊖ REMOVE', 'Click a wrong / misleading detection '
+                                        'to delete it (and stop it reappearing)')
         self.btn_nav.setChecked(True)
         for b, mode in ((self.btn_nav, MODE_NAV), (self.btn_pose, MODE_POSE),
-                        (self.btn_mark, MODE_MARK)):
+                        (self.btn_mark, MODE_MARK), (self.btn_del, MODE_DEL)):
             b.clicked.connect(lambda _=False, b=b, m=mode: self._set_mode(b, m))
 
         sep = QLabel('│')
@@ -431,8 +437,10 @@ class MapWidget(QWidget):
                  MODE_POSE: 'SET POSE: press where the robot IS, drag toward '
                             'where it FACES, release = commit '
                             '(plain click moves it without turning it)',
-                 MODE_MARK: 'MARKER: click to drop a pin'}
-        text = hints[mode]
+                 MODE_MARK: 'MARKER: click to drop a pin',
+                 MODE_DEL: 'REMOVE: click a wrong detection to delete it '
+                           '(it will not reappear)'}
+        text = hints.get(mode, '')
         self._mode_hint.setText(text)
         self._mode_hint.setVisible(bool(text))
         self._mode_hint.adjustSize()
@@ -465,6 +473,21 @@ class MapWidget(QWidget):
                 self.goalRequested.emit(x, y)
         elif self.canvas.mode == MODE_MARK:
             self.markerPlaced.emit(x, y)
+        elif self.canvas.mode == MODE_DEL:
+            self.remove_marker_near(x, y)
+
+    def remove_marker_near(self, x: float, y: float, radius: float = 0.5) -> None:
+        """Delete the detection/marker nearest a click and suppress it from
+        re-appearing — for wrong/misleading classifications."""
+        if not self._markers:
+            return
+        m = min(self._markers, key=lambda mk: math.hypot(mk.x - x, mk.y - y))
+        if math.hypot(m.x - x, m.y - y) > radius:
+            return
+        self._suppressed.append((m.kind, m.x, m.y,
+                                 time.monotonic() + MARKER_SUPPRESS_S))
+        self._remove_marker(m)
+        self.markersChanged.emit(list(self._markers))
 
     # ════════ occupancy grid ════════
     def update_map(self, payload: dict) -> None:
@@ -560,6 +583,15 @@ class MapWidget(QWidget):
         layer = self._layer(robot_id)
         if layer.pose == (0.0, 0.0, 0.0) and not layer.points:
             self._style_robot(robot_id, layer)
+        # Keep the icon ON the map. A lidar-less robot (Beta) drifts on dead-
+        # reckoning with nothing to correct it, so its estimated pose can walk
+        # right off the map. Clamp the DISPLAYED position to the mapped extent
+        # (poses already inside are untouched; the SLAM robot stays put). The
+        # raw pose used for planning/alignment is unchanged.
+        if self._grid_bounds is not None:
+            x0, y0, x1, y1 = self._grid_bounds
+            x = max(x0, min(x1, x))
+            y = max(y0, min(y1, y))
         layer.pose = (x, y, th)
 
         # drawn pose chases the raw pose — smooth motion, zero added lag
@@ -716,7 +748,13 @@ class MapWidget(QWidget):
             if not (x0 - m_ <= x <= x1 + m_ and y0 - m_ <= y <= y1 + m_):
                 return
         now = time.monotonic()
+        # If the operator deleted this kind here recently (wrong detection),
+        # don't let YOLO re-add it while the suppression is live.
+        self._suppressed = [s for s in self._suppressed if s[3] > now]
         merge_r = MARKER_MERGE_M.get(kind, 0.6)
+        for (k, sx, sy, _t) in self._suppressed:
+            if k == kind and math.hypot(sx - x, sy - y) < merge_r:
+                return
         for m in self._markers:
             if m.kind == kind and math.hypot(m.x - x, m.y - y) < merge_r:
                 # same incident: smooth position, keep highest confidence
@@ -800,6 +838,7 @@ class MapWidget(QWidget):
             for it in m.items:
                 self.canvas.scene().removeItem(it)
         self._markers.clear()
+        self._suppressed.clear()        # clean slate — detections may return
         self.markersChanged.emit([])
 
     def center_on(self, x: float, y: float) -> None:

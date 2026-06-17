@@ -17,9 +17,11 @@ from ui.master_mission import MasterMission
 
 _STATUS_COLOR = {
     'IDLE': theme.MUTED, 'OFFLINE': theme.MUTED, 'OFF': theme.MUTED,
+    '-': theme.MUTED, 'HOLD': theme.MUTED,
     'ONLINE': theme.GOOD, 'AT BASE': theme.GOOD, 'DONE': theme.GOOD,
     'MAPPING': theme.ACCENT, 'RETURNING': theme.ACCENT,
-    'NAVIGATING': theme.ACCENT, 'SCANNED': theme.ACCENT,
+    'NAVIGATING': theme.ACCENT, 'SCANNED': theme.ACCENT, 'READING': theme.ACCENT,
+    'PUMP PENDING': theme.WARN,
     'PUMPING': theme.MARKER_FIRE, 'ON': theme.MARKER_FIRE,
 }
 
@@ -28,6 +30,7 @@ class MissionPanel(QWidget):
     startRequested = Signal()
     nextRequested = Signal()
     abortRequested = Signal()
+    interruptRequested = Signal()
     autoChanged = Signal(bool)
 
     def __init__(self, parent=None):
@@ -73,34 +76,41 @@ class MissionPanel(QWidget):
         pills.setSpacing(8)
         self._pills: dict[str, QLabel] = {}
         for key, cap in (('alpha', 'ALPHA'), ('beta', 'BETA'),
-                         ('link', 'MASTER-SLAVE'), ('pump', 'PUMP')):
+                         ('gamma', 'GAMMA'), ('link', 'MASTER-SLAVE'),
+                         ('pump', 'PUMP'), ('gas', 'GAS')):
             box = QLabel()
             box.setStyleSheet('')
             self._pills[key] = box
             pills.addWidget(self._make_pill_frame(cap, box))
         pills.addStretch(1)
         root.addLayout(pills)
-        self.set_status({'alpha': 'IDLE', 'beta': 'IDLE',
-                         'link': 'OFFLINE', 'pump': 'OFF'})
+        self.set_status({'alpha': 'IDLE', 'beta': 'IDLE', 'gamma': 'IDLE',
+                         'link': 'OFFLINE', 'pump': 'OFF', 'gas': '-'})
 
         # ── controls ──
         ctl = QHBoxLayout()
         ctl.setSpacing(8)
         self.btn_start = QPushButton('START MISSION')
         self.btn_next = QPushButton('NEXT PHASE >>')
+        self.btn_interrupt = QPushButton('INTERRUPT PUMP')
         self.btn_abort = QPushButton('ABORT / OVERRIDE')
-        for b in (self.btn_start, self.btn_next, self.btn_abort):
+        for b in (self.btn_start, self.btn_next, self.btn_interrupt,
+                  self.btn_abort):
             b.setFocusPolicy(Qt.NoFocus)
             b.setMinimumHeight(34)
         self.btn_start.setStyleSheet(
             f'font-weight:800; background:{theme.GOOD}; color:#06210f;')
+        self.btn_interrupt.setStyleSheet(
+            f'font-weight:800; background:{theme.WARN}; color:#2a1c00;')
         self.btn_abort.setStyleSheet(
             f'font-weight:800; background:{theme.BAD}; color:#2a0a0a;')
         self.btn_start.clicked.connect(self.startRequested)
         self.btn_next.clicked.connect(self.nextRequested)
+        self.btn_interrupt.clicked.connect(self.interruptRequested)
         self.btn_abort.clicked.connect(self.abortRequested)
         ctl.addWidget(self.btn_start)
         ctl.addWidget(self.btn_next)
+        ctl.addWidget(self.btn_interrupt)
         ctl.addWidget(self.btn_abort)
         root.addLayout(ctl)
 
@@ -143,7 +153,12 @@ class MissionPanel(QWidget):
         self.btn_abort.setEnabled(running)
         self.btn_next.setEnabled(running and not self.btn_auto.isChecked())
         if not running:
+            self.btn_interrupt.setEnabled(False)
             self._set_step('')
+
+    def set_action_pending(self, pending: bool) -> None:
+        """The 5 s pump window is open — enable the INTERRUPT button."""
+        self.btn_interrupt.setEnabled(pending)
 
     def log_line(self, line: str) -> None:
         self.log.append_line(line, source='local')

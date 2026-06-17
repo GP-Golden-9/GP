@@ -179,6 +179,8 @@ class OpsPanel(QWidget):
             self.prox_bars[key] = bar
             self.prox_lbls[key] = val
         self._prox_band: dict = {'l': None, 'r': None}   # restyle only on change
+        self._prox_maxcount: dict = {'l': 0, 'r': 0}     # frames pinned at cap
+        self._prox_dead: dict = {'l': False, 'r': False}
         root.addWidget(self.prox_box)
         self.prox_box.setVisible(False)
 
@@ -214,8 +216,14 @@ class OpsPanel(QWidget):
             lbl = self.prox_lbls[key]
             m = us.get(key) if us else None
             cm = None if m is None else m * 100.0
-            if cm is None:
-                band, color = 'none', theme.MUTED
+            # A working sensor's reading jitters; one PINNED at the echo cap
+            # (~150 cm) for seconds isn't "clear" — it's getting no echo (dead/
+            # disconnected). Flag that instead of a misleading full green bar.
+            at_cap = cm is not None and cm >= 148.0
+            self._prox_maxcount[key] = (self._prox_maxcount[key] + 1) if at_cap else 0
+            dead = self._prox_maxcount[key] > 60        # ~3 s frozen at the cap
+            if cm is None or dead:
+                band, color = 'none', theme.BAD if dead else theme.MUTED
             elif cm <= stop_cm:
                 band, color = 'stop', theme.BAD
             elif cm <= slow_cm:
@@ -223,19 +231,22 @@ class OpsPanel(QWidget):
             else:
                 band, color = 'clear', theme.GOOD
 
-            if band != self._prox_band[key]:        # expensive — only on change
+            if band != self._prox_band[key] or (dead != self._prox_dead[key]):
                 self._prox_band[key] = band
+                self._prox_dead[key] = dead
                 bar.setStyleSheet('' if band == 'none' else (
                     f'QProgressBar{{border:1px solid {theme.BORDER};'
                     f'border-radius:4px;background:#111;}} '
                     f'QProgressBar::chunk{{background:{color};border-radius:3px;}}'))
                 lbl.setStyleSheet(f'color:{color}; font-family:{theme.MONO}; '
                                   f'font-size:12px;'
-                                  + ('' if band == 'none' else ' font-weight:700;'))
+                                  + ('' if band == 'none' and not dead else
+                                     ' font-weight:700;'))
 
             # cheap per-frame updates
-            bar.setValue(0 if cm is None else max(0, min(int(cm), 150)))
-            lbl.setText('— no echo' if cm is None else f'{cm:.0f} cm')
+            bar.setValue(0 if (cm is None or dead) else max(0, min(int(cm), 150)))
+            lbl.setText('NO ECHO - check sensor' if dead else
+                        ('- no echo' if cm is None else f'{cm:.0f} cm'))
 
     def set_gas(self, value: int, alarm: bool, warn_at: int = 2000,
                 alarm_at: int = 3000) -> None:
