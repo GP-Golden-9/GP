@@ -1,6 +1,9 @@
 [Unit]
 Description=GP Robot2 camera publisher (independent of the ROS stack)
-After=network-online.target
+# No network-online.target: the publisher binds its ZMQ PUB socket to a
+# wildcard and streams the moment a subscriber connects — it doesn't need
+# the network "up" to start, and waiting on it added ~3 min of boot delay
+# on flaky WiFi (same fix as gp-robot2/gp-preflight). Do NOT re-add it.
 # Deliberately NOT bound to gp-robot2.service: video must survive ROS crashes
 # and a camera fault must never take down robot control.
 

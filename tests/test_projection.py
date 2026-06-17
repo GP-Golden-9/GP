@@ -59,7 +59,7 @@ def test_bearing_signs():
 
 def test_distance_model_clamped():
     assert detection_distance(1.0) == pytest.approx(0.9)   # full-frame flame
-    assert detection_distance(0.001) == 4.0                # tiny → clamp far
+    assert detection_distance(0.001) == 6.0                # tiny → clamp far (DIST_MAX)
     # h is normalized (≤1); out-of-range input saturates to the nearest value
     assert detection_distance(5.0) == pytest.approx(0.9)
     assert detection_distance(0.5) == pytest.approx(1.8)   # half frame ≈ 1.8 m
