@@ -112,6 +112,11 @@ class Robot2Bridge(Node):
         # arrival of drive topics — first message and every 50th.
         self._n_manual = 0
         self._n_auto = 0
+        # Serial backlog telemetry: how many stale D: packets the drain
+        # dropped (see _serial_reader). Logged periodically so growing lag is
+        # VISIBLE instead of silently crashing the robot into a wall.
+        self._dropped_total = 0
+        self._last_drop_log = 0.0
         # Front ultrasonics: latest filtered ranges (cm) + forward-block
         # latch. Written by the serial reader thread, read in the command
         # callbacks — plain int reads/writes are atomic under the GIL.
@@ -270,11 +275,26 @@ class Robot2Bridge(Node):
         transport failures (a service restart reopened the port, which
         looked like curing SHM/discovery).
 
-        Recovery: any exception OR 3 s of silence (firmware streams at
+        Recovery: any exception OR 5 s of silence (firmware streams at
         50 Hz — silence IS death) → close, announce on /robot_log, and
         reconnect in a loop until the Mega is back.
+
+        DRAIN-TO-LATEST (root-cause fix 2026-06-17, "fine for a minute then
+        crashes into walls"): the old loop processed EVERY line FIFO — 5 ROS
+        publishes + 3 clock reads per D: packet at 50 Hz on a Pi 3B+. When the
+        consumer can't quite hold 50 Hz, the kernel serial buffer fills and
+        every readline() returns progressively OLDER data: fine while the
+        buffer absorbs the slack (~1 min), then every sensor reading is seconds
+        stale. The ultrasonic guard then sees a wall that's already been hit,
+        and the laptop odom integrates a stale gyro → corrupted heading.
+        Fix: each pass, consume ALL bytes the OS has buffered and act only on
+        the NEWEST D: packet (encoders are cumulative, so dropping intermediate
+        packets loses zero odometry; the latest ultrasonic range is exactly
+        what the obstacle guard needs). Latency is now bounded to one drain
+        cycle no matter how loaded the Pi gets. ACK/STS lines keep their order.
         """
         last_line_t = time.monotonic()
+        buf = b''
         while rclpy.ok():
             if not (self.arduino and self.arduino.is_open):
                 self._announce_serial('SERIAL: reconnecting to Mega…')
@@ -282,17 +302,21 @@ class Robot2Bridge(Node):
                 if self.connected:
                     self._announce_serial('SERIAL: Mega link restored')
                     last_line_t = time.monotonic()
+                    buf = b''
                 else:
                     time.sleep(2.0)
                 continue
             try:
-                raw = self.arduino.readline()
+                # Block for at least one byte (timeout=1 s), then sweep up
+                # everything else already waiting — this is the drain.
+                chunk = self.arduino.read(max(1, self.arduino.in_waiting))
             except Exception as exc:
                 self.get_logger().error(f'serial lost ({exc}) — reconnecting')
                 self._announce_serial('SERIAL: Mega link LOST — reconnecting')
                 self._drop_serial()
+                buf = b''
                 continue
-            if not raw:
+            if not chunk:
                 # 5 s, not 3: the firmware streams at 50 Hz so true death is
                 # still caught fast, but a brief stall under motor load no
                 # longer triggers a reconnect — and a reconnect DTR-resets the
@@ -303,22 +327,47 @@ class Robot2Bridge(Node):
                     self._announce_serial(
                         'SERIAL: Mega silent 5 s — reconnecting')
                     self._drop_serial()
+                    buf = b''
                 continue
             last_line_t = time.monotonic()
-            try:
-                line = raw.decode(errors='ignore').strip()
+
+            buf += chunk
+            lines = buf.split(b'\n')
+            buf = lines.pop()                 # keep the trailing partial line
+
+            latest_d = None
+            dropped = 0
+            for raw in lines:
+                try:
+                    line = raw.decode(errors='ignore').strip()
+                except Exception:
+                    continue
+                if not line:
+                    continue
                 if line.startswith('D:'):
-                    self._parse_sensor_data(line)
+                    if latest_d is not None:
+                        dropped += 1          # an older D: we will skip
+                    latest_d = line
                 elif line.startswith('STS:'):
-                    # Old firmware: STS:speed,estop,enc1,enc2,enc3,enc4
                     self._parse_sts_data(line)
                 elif line.startswith(('OK:', 'ERR:')):
                     # v5 firmware command ACKs (pump/servo/e-stop) → dashboard
                     self.accessory_pub.publish(String(data=line))
                     if line.startswith('ERR:'):
                         self.get_logger().warn(f'Arduino: {line}')
-            except Exception:
-                time.sleep(0.1)
+
+            if latest_d is not None:
+                self._parse_sensor_data(latest_d)
+            if dropped:
+                self._dropped_total += dropped
+                now = time.monotonic()
+                if now - self._last_drop_log > 5.0:
+                    self._last_drop_log = now
+                    line = (f'SERIAL BACKLOG: skipped {self._dropped_total} '
+                            'stale packets (drain keeping readings fresh) — '
+                            'Pi under load; readings stay current')
+                    self.get_logger().warn(line)
+                    self._announce_serial(line)
 
     def _drop_serial(self):
         try:

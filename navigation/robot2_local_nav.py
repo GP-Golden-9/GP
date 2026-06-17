@@ -64,6 +64,11 @@ BIAS_STALE_S = 0.8
 TURN_SIGN = 1.0
 MANUAL_OVERRIDE_S = 1.0
 RATE_HZ = 10.0
+# SAFETY: the ultrasonics are Beta's only obstacle sense. If their feed goes
+# stale (bridge reconnecting to the Mega, serial hiccup), driving on the last
+# range is exactly how it crashes into a wall it can no longer see. After this
+# long with no fresh range, STOP rather than trust a frozen reading.
+RANGE_STALE_S = 1.0
 # SAFETY: WANDER drives autonomously on the Pi, so if the console vanishes
 # (closed, crashed, or WiFi dropped) nothing would stop it. The dashboard
 # re-affirms AUTONOMOUS at ~2 Hz; if that heartbeat goes stale, STOP. (GOAL
@@ -101,6 +106,7 @@ class Robot2LocalNav(Node):
         self.explore_t = 0.0           # last AUTONOMOUS heartbeat (safety)
         self.left = MAXR_M
         self.right = MAXR_M
+        self.range_t = 0.0             # last fresh ultrasonic update (safety)
 
         # streamed attraction bias from the laptop
         self.bias_vx = 0.0
@@ -140,9 +146,11 @@ class Robot2LocalNav(Node):
 
     def _left_cb(self, m: Range):
         self.left = m.range if m.range > 0.0 else MAXR_M
+        self.range_t = time.monotonic()
 
     def _right_cb(self, m: Range):
         self.right = m.range if m.range > 0.0 else MAXR_M
+        self.range_t = time.monotonic()
 
     def _enable_cb(self, m: Bool):
         en = bool(m.data)
@@ -205,6 +213,14 @@ class Robot2LocalNav(Node):
             return
         if now < self._manual_until:        # operator override active
             self._status('MANUAL')
+            return
+
+        # SAFETY: never drive on a frozen obstacle reading. If the ultrasonic
+        # feed stalled (bridge reconnecting), stop until it's live again.
+        if self.range_t == 0.0 or now - self.range_t > RANGE_STALE_S:
+            self._reset_latches()
+            self._stop()
+            self._status('NO RANGE — stopped')
             return
 
         left, right = self.left, self.right
