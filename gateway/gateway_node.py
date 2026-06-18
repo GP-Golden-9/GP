@@ -178,22 +178,35 @@ class GatewayNode(Node):
         self.state['accel'] = [msg.linear_acceleration.x,
                                msg.linear_acceleration.y,
                                msg.linear_acceleration.z]
-        # ── 50 Hz heading integration (cheap; accurate vs laptop 20 Hz) ──
-        enc = self.state.get('enc')
-        enc_sum = sum(abs(int(e)) for e in enc) if enc else None
-        stopped = (enc_sum is not None and enc_sum == self._last_enc_sum)
-        self._last_enc_sum = enc_sum
-        if stopped:                       # learn residual bias while still
-            self._gyro_bias += 0.01 * (gz - self._gyro_bias)
-        now = self.get_clock().now().nanoseconds / 1e9
-        if self._heading_last is not None:
-            dt = now - self._heading_last
-            if 0.0 < dt < 0.5:
-                self._heading += (gz - self._gyro_bias) * dt
-                self._heading = math.atan2(math.sin(self._heading),
-                                           math.cos(self._heading))
-        self._heading_last = now
-        self.state['heading'] = round(self._heading, 4)
+        # Heading: PREFER the publisher's own integration when it ships a
+        # valid orientation (Beta's bridge integrates yaw at 50 Hz with the
+        # Mega's hardware timestamp — it sees every packet before the drain
+        # drops any, and no wall-clock jitter). Only integrate here as a
+        # fallback for sources that send raw gyro with no orientation
+        # (cov[0] < 0). Integrating off thinned /imu with a wall-clock dt was
+        # the ~45 deg hand-rotation drift (field 2026-06-18).
+        if msg.orientation_covariance[0] >= 0.0:
+            q = msg.orientation
+            siny = 2.0 * (q.w * q.z + q.x * q.y)
+            cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+            self._heading = math.atan2(siny, cosy)
+            self.state['heading'] = round(self._heading, 4)
+        else:
+            enc = self.state.get('enc')
+            enc_sum = sum(abs(int(e)) for e in enc) if enc else None
+            stopped = (enc_sum is not None and enc_sum == self._last_enc_sum)
+            self._last_enc_sum = enc_sum
+            if stopped:                       # learn residual bias while still
+                self._gyro_bias += 0.01 * (gz - self._gyro_bias)
+            now = self.get_clock().now().nanoseconds / 1e9
+            if self._heading_last is not None:
+                dt = now - self._heading_last
+                if 0.0 < dt < 0.5:
+                    self._heading += (gz - self._gyro_bias) * dt
+                    self._heading = math.atan2(math.sin(self._heading),
+                                               math.cos(self._heading))
+            self._heading_last = now
+            self.state['heading'] = round(self._heading, 4)
         self.health.touch('imu')
 
     def _odom_cb(self, msg: Odometry):

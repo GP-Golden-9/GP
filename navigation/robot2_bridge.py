@@ -117,6 +117,20 @@ class Robot2Bridge(Node):
         # VISIBLE instead of silently crashing the robot into a wall.
         self._dropped_total = 0
         self._last_drop_log = 0.0
+        # 50 Hz yaw integration done HERE, not in the gateway. The gateway
+        # integrated from /imu messages with a wall-clock dt — but the drain
+        # publishes /imu only for the latest packet, so it lost intermediate
+        # gyro samples, and integrating an angular RATE with dropped samples
+        # loses angle on every turn (field 2026-06-18: hand-rotate Beta
+        # right-centre-left-centre and the map heading drifts ~45 deg). Here we
+        # see EVERY packet before the drain drops it, and use the Mega's own
+        # millis() timestamp for dt — immune to OS/serial/CPU-load jitter. The
+        # absolute heading rides out in the IMU orientation (gateway forwards
+        # it), so dropped telemetry frames never lose heading.
+        self._heading = 0.0
+        self._heading_bias = 0.0          # residual gyro bias (firmware pre-subtracts boot bias)
+        self._heading_prev_ts = None      # Mega ts (ms) of last integrated packet
+        self._heading_prev_enc = None
         # Front ultrasonics: latest filtered ranges (cm) + forward-block
         # latch. Written by the serial reader thread, read in the command
         # callbacks — plain int reads/writes are atomic under the GIL.
@@ -345,8 +359,13 @@ class Robot2Bridge(Node):
                 if not line:
                     continue
                 if line.startswith('D:'):
+                    # Integrate yaw from EVERY packet (cheap scalar math) so no
+                    # gyro sample is lost to the drain — see _integrate_heading.
+                    parts = line[2:].split(',')
+                    if len(parts) >= 11:
+                        self._integrate_heading(parts)
                     if latest_d is not None:
-                        dropped += 1          # an older D: we will skip
+                        dropped += 1          # an older D: we will skip (publish)
                     latest_d = line
                 elif line.startswith('STS:'):
                     self._parse_sts_data(line)
@@ -403,6 +422,38 @@ class Robot2Bridge(Node):
         except (ValueError, IndexError) as e:
             self.get_logger().debug(f'STS parse error: {e}')
 
+    def _integrate_heading(self, parts):
+        """Integrate yaw from ONE D: packet using the Mega's ms timestamp.
+
+        `parts` is the already-split D: body (parts[0]=ts ms, 1..4=enc,
+        10=gz raw). Called for every drained packet so the 50 Hz gyro stream
+        is integrated in full, with a hardware-timestamp dt that no software
+        jitter can corrupt. Bias is re-learned only while the wheels are
+        still (manual pushes count as 'moving' via the chassis, but the
+        encoders don't turn — so a hand-rotation is correctly NOT learned as
+        bias; it just integrates)."""
+        try:
+            ts = int(parts[0])
+            enc = [int(parts[i]) for i in range(1, 5)]
+            gz = int(parts[10]) * GYRO_SCALE          # raw -> rad/s
+        except (ValueError, IndexError):
+            return
+        wheels_moving = (self._heading_prev_enc is not None and
+                         any(e != p for e, p in zip(enc, self._heading_prev_enc)))
+        self._heading_prev_enc = enc
+        # Learn residual bias only when truly idle (no wheel motion AND a tiny
+        # gyro reading) — never during a hand-rotation, which spins the gyro
+        # with the wheels stopped.
+        if not wheels_moving and abs(gz - self._heading_bias) < 0.05:
+            self._heading_bias += 0.01 * (gz - self._heading_bias)
+        if self._heading_prev_ts is not None:
+            dt = (ts - self._heading_prev_ts) / 1000.0
+            if 0.0 < dt < 0.1:                        # ignore Mega resets / gaps
+                self._heading += (gz - self._heading_bias) * dt
+                self._heading = math.atan2(math.sin(self._heading),
+                                           math.cos(self._heading))
+        self._heading_prev_ts = ts
+
     def _parse_sensor_data(self, line: str):
         """Parse: D:timestamp,e1,e2,e3,e4,ax,ay,az,gx,gy,gz"""
         try:
@@ -441,8 +492,16 @@ class Robot2Bridge(Node):
             imu_msg.angular_velocity.y = gy * GYRO_SCALE
             imu_msg.angular_velocity.z = gz * GYRO_SCALE
 
-            # Orientation unknown from raw data (EKF will compute it)
-            imu_msg.orientation_covariance[0] = -1.0
+            # Orientation: yaw from the bridge's 50 Hz, hardware-timestamped
+            # integration (see _integrate_heading). Marked VALID (cov[0] >= 0)
+            # so the gateway forwards this absolute heading instead of doing
+            # its own jittery wall-clock integration off thinned /imu samples.
+            h = self._heading
+            imu_msg.orientation.x = 0.0
+            imu_msg.orientation.y = 0.0
+            imu_msg.orientation.z = math.sin(h / 2.0)
+            imu_msg.orientation.w = math.cos(h / 2.0)
+            imu_msg.orientation_covariance[0] = 0.01
 
             self.imu_pub.publish(imu_msg)
 
