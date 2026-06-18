@@ -147,3 +147,31 @@ re-mount lower + add fixed sensors over a pan-servo).
 config adopted on next restart. Repo at 61515a9, all pushed, both robots
 deployed (Beta via git bundle over the LAN — its origin/main is stale, base
 the bundle on Beta's actual HEAD; scp to ~ not /tmp = 50MB tmpfs).
+
+**AUTONOMY DEMO BUILD (2026-06-19, repo at 061feff, all pushed; full
+description in docs/field_fixes_and_runbook_2026-06-18.md):** Console AUTONOMY
+dock (right side, tabbed w/ OPERATIONS — map stays visible) with two
+independent REAL Beta actions:
+- SCAN AREA: coverage-path generator (`dashboard_qt/ui/map/coverage.py`,
+  boustrophedon, ERODE free space by clearance so no waypoint hits a wall,
+  largest open run per row, UNKNOWN=blocked, CAP ~14 waypoints/auto-widen
+  lanes) → Beta follows it as a reference (bias + ultrasonic deviate/merge) →
+  returns to base. Reference path drawn dashed; "DEVIATING" shown on dodge.
+- GO TO FIRE → PUMP 5s → RETURN: navigate to placed FIRE/PIN marker, hold +
+  pump 5s, return to start. FIRE precise (no skip); SCAN loose.
+- FLEXIBLE following (mission.py): skip a waypoint only on NO PROGRESS (Beta
+  stops getting closer) — NOT on a fixed timer (that false-"stuck" a big map
+  by skipping far-but-reachable waypoints). Give up after 4 consecutive.
+- ESCAPE robustness (local_nav): reverse → pivot → COMMIT FORWARD to clear the
+  obstacle before re-seeking goal (breaks pivot-in-place trap); alternates dir.
+- Faster auto rotation: auto_turn_pwm 200→235, max_angular_rps 0.25→0.35.
+- ENCODER-HEADING FALLBACK now BUILT (bridge): frozen-gyro signature detect →
+  integrate wheel differential so driven turns keep heading through a GY-87
+  dropout; auto-restores. (5V rewire + firmware MPU auto-reinit still the
+  stronger fixes; auto-reinit NOT built.)
+- UI: AUTONOMY widget stripped to ASCII (no emoji); LIVE FEED falls back to
+  Beta's camera when active robot (Alpha) has no camera.
+- Both robots ran live this session; Alpha mapped (298x150 @ 2.5cm, reaching
+  console). SCAN tuning lives in _scan_area + mission.py; map quality on a
+  large/irregular arena makes full coverage slow — re-map a tidier area or
+  accept the coarse 14-wp sweep for the demo.

@@ -8,23 +8,24 @@ here** (SSH/WiFi/OTA creds live in the gitignored `config_secrets.h`).
 
 ## TL;DR — what changed and how to run
 
-- Beta now navigates autonomously to an operator-placed fire on the map
-  (global A* over Alpha's map + ultrasonic dodging) via the **FIRE TEST** tab.
-- Major bugs fixed: wall-crashes from serial lag, ~45° yaw drift, the ~30 s
+- Console **AUTONOMY** dock (right side, map stays visible): two independent
+  real actions on Beta — **SCAN AREA** (cover Alpha's map, return to base) and
+  **GO TO FIRE -> PUMP 5s -> RETURN**.
+- Major bugs fixed: wall-crashes from serial lag, ~45 deg yaw drift, the ~30 s
   motor-stall lock-up, the ~3 min slow boot.
 - **One hardware thing still matters most:** the GY-87 IMU is on a marginal
   3.3 V feed and drops out intermittently → **rewire VCC to 5 V before the
-  demo.** A power-cycle revives it temporarily.
+  demo.** A power-cycle revives it temporarily (and the bridge now falls back
+  to encoder-heading during a dropout so driven turns keep working).
 
-### Run the FIRE TEST
-1. Power Alpha; let it SLAM and **map the area** (the map must show in the
-   console — Beta plans its global route over Alpha's map).
-2. Power Beta. In the console, select Beta.
-3. **⌖ SET POSE** Beta: press where it physically is, drag toward where it
-   faces, release. (One-time alignment — Beta has no lidar/compass.)
-4. **FIRE TEST** tab → **① PLACE FIRE** → click the map where the fire is.
-5. **② GO TO FIRE.** Beta routes there, dodging unmapped obstacles. Status
-   shows EN ROUTE → ARRIVED. **STOP** (panel) or **Esc** (e-stop) any time.
+### Run the AUTONOMY demo  (see the dedicated section below)
+1. **Alpha** maps the area (drive it, or arm AUTONOMOUS) until the map covers
+   the arena and stops changing. Leave Alpha's stack running (don't restart —
+   that clears the map).
+2. Select **Beta** → **SET POSE** it (press where it is, drag toward its
+   heading). Required — Beta has no lidar/compass.
+3. **AUTONOMY** dock → **SCAN AREA** (survey) and/or **PLACE FIRE** + **GO TO
+   FIRE**. STOP (panel) or Esc (e-stop) any time.
 
 ---
 
@@ -100,6 +101,53 @@ here** (SSH/WiFi/OTA creds live in the gitignored `config_secrets.h`).
   freshness, not `ros2 topic`.
 
 ---
+
+## Autonomy demo — SCAN + FIRE (added 2026-06-19)
+
+Two independent operator-triggered actions in the **AUTONOMY** dock, both real
+on Beta. Console-brokered (the laptop is the coordinator; the robots are
+isolated ROS islands by design — no direct robot-to-robot link).
+
+**SCAN AREA** — Beta surveys the mapped area:
+- The console turns Alpha's map into a **coverage path** (boustrophedon /
+  lawnmower) — `dashboard_qt/ui/map/coverage.py`. It ERODES the free space by
+  the robot's clearance (no waypoint against a wall), uses each row's LARGEST
+  open run (never crosses a gap), treats UNKNOWN cells as blocked, and CAPS the
+  path at ~14 waypoints (auto-widens lanes) so it's a simple handful of sweeps.
+- Beta follows it as a **reference, not a rail**: the laptop streams a heading
+  bias toward the next waypoint; Beta's `robot2_local_nav` fuses it with
+  ultrasonic repulsion → it deviates around unmapped obstacles and merges back.
+  The dashed reference line stays on the map; the panel shows "DEVIATING" when
+  it dodges.
+- **Loose, progress-based following:** a waypoint is skipped only when Beta
+  stops getting CLOSER to it (genuinely blocked) — NOT just because it hasn't
+  arrived yet (that false-"stuck" a big map). Gives up after 4 consecutive
+  unreachable waypoints. Then returns to base.
+
+**GO TO FIRE -> PUMP 5s -> RETURN** — place a FIRE/PIN marker, then Beta
+navigates to it (A* + ultrasonic dodge), holds and pumps exactly 5 s (firmware
+also hard-caps), and returns to its start pose. FIRE follows precisely (no
+skipping — it must reach the fire).
+
+**Prereqs (both):** Alpha's map showing in the console + Beta SET-POSE aligned.
+The panel refuses with a clear reason otherwise.
+
+### Robust-motion knobs (config/robot2.yaml unless noted)
+- `drive.auto_turn_pwm` 235, `goto.max_angular_rps` 0.35 — auto turn speed
+  (raised from 200/0.25 for snappier pivots; the speed slider scales it).
+- `drive.ramp_pwm_per_s` 300 — accel limit (gentle launches, anti-slip).
+- `drive.stall_disarm_s` 3.0 / `stall_cooldown_s` 2.0 — the anti-lockup.
+- Stall escape (local_nav): reverse -> pivot -> COMMIT FORWARD to clear the
+  obstacle before re-seeking the goal (breaks the pivot-in-place trap);
+  alternates direction on repeats.
+- Coverage tuning is in `_scan_area` (lane_m 0.6, clearance, max_waypoints 14)
+  and `mission.py` (skip_stuck, wp_timeout 12 s no-progress, tol 0.45 m).
+
+### UI notes
+- AUTONOMY is a right-side DOCK (tabbed with OPERATIONS) — the MAP stays
+  visible while you run it.
+- LIVE FEED falls back to **Beta's camera** when the active robot (e.g. Alpha)
+  has no camera.
 
 ## Deploying to the robots
 

@@ -108,16 +108,19 @@ flashes via FTDI then ArduinoOTA — see `docs/robot3_flashing.md`.
 
 ---
 
-## Current hardware state & open tickets (2026-06-18)
+## Current hardware state & open tickets (2026-06-19)
 
 > Full session fix list + runbook: **`docs/field_fixes_and_runbook_2026-06-18.md`**.
 > Recent: serial-lag wall-crash fixed (bridge drains to latest packet); yaw
-> integrated in the bridge at 50 Hz + scale-cal `gyro_scale_correction 1.0304`;
-> stall-disarm anti-lockup (`drive.stall_disarm_s 3.0`) + auto back-off/reorient;
-> boot ~3min→~1min (dropped `network-online.target`); odometry moved to the
-> laptop (`dashboard_qt/state/local_odom.py`), Beta runs one reactive node
-> `robot2_local_nav.py`; dashboard **FIRE TEST** tab (place fire → Beta
-> autonomous-navigates) replaced the master/slave sim.
+> integrated in the bridge at 50 Hz + scale-cal `gyro_scale_correction 1.0304`
+> + encoder-heading fallback on gyro dropout; stall-disarm anti-lockup
+> (`drive.stall_disarm_s 3.0`) + commit-forward escape; boot ~3min→~1min
+> (dropped `network-online.target`); odometry on the laptop
+> (`dashboard_qt/state/local_odom.py`), Beta runs one reactive node
+> `robot2_local_nav.py`. Console **AUTONOMY** dock: **SCAN AREA** (coverage of
+> Alpha's map, `ui/map/coverage.py`) + **GO TO FIRE -> PUMP 5s -> RETURN**,
+> both real, loose progress-based path following. LIVE FEED falls back to
+> Beta's camera when on Alpha.
 
 - **Beta ultrasonics**: WIRED (2 front HC-SR04, LEFT trig=30/echo=31,
   RIGHT trig=32/echo=33, 5 V), operator tilted them slightly outward for FOV.
