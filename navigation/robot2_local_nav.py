@@ -75,6 +75,11 @@ RANGE_STALE_S = 1.0
 STALL_GIVEUP_N = 4
 STALL_WINDOW_S = 20.0
 GIVEUP_STOP_S = 6.0
+# After a recovery pivot, DRIVE FORWARD this long in the open direction
+# (ignoring the goal pull) to actually clear the obstacle before re-seeking
+# the goal. Without this, the robot pivots away then the bias steers it right
+# back in — the "stuck in place" oscillation. Direction alternates on repeat.
+COMMIT_TIME_S = 1.2
 # SAFETY: WANDER drives autonomously on the Pi, so if the console vanishes
 # (closed, crashed, or WiFi dropped) nothing would stop it. The dashboard
 # re-affirms AUTONOMOUS at ~2 Hz; if that heartbeat goes stale, STOP. (GOAL
@@ -123,6 +128,9 @@ class Robot2LocalNav(Node):
         self.turn_dir = 0
         self.turn_until = 0.0
         self.rev_until = 0.0
+        self.commit_until = 0.0          # drive-forward-to-clear phase
+        self._last_escape_dir = 0
+        self._last_escape_t = 0.0
         self._manual_until = 0.0
         self._dbg = 0
         self._last_status = ''
@@ -205,12 +213,11 @@ class Robot2LocalNav(Node):
             self._stall_escapes = 0
             self._stall_first_t = now
         self._stall_escapes += 1
-        self.rev_until = now + REV_TIME_S
-        self.turn_dir = 1 if self.left > self.right else -1
-        self.turn_until = self.rev_until + TURN_LOCK_S * 1.5   # bigger reorient
+        self._start_escape(now, 1 if self.left > self.right else -1, reverse=True)
         side = 'left' if self.turn_dir > 0 else 'right'
         self.get_logger().warn(
-            f'STALL -> escape #{self._stall_escapes}: back off + reorient {side}')
+            f'STALL -> escape #{self._stall_escapes}: back off + reorient {side} '
+            '+ commit forward')
         if self._stall_escapes >= STALL_GIVEUP_N:
             self._giveup_until = now + GIVEUP_STOP_S
             self._stall_escapes = 0
@@ -238,6 +245,19 @@ class Robot2LocalNav(Node):
         self.turn_dir = 0
         self.turn_until = 0.0
         self.rev_until = 0.0
+        self.commit_until = 0.0
+
+    def _start_escape(self, now, prefer, reverse=True):
+        """Set up a full escape: (reverse) → pivot → commit-forward. Alternates
+        direction if we just escaped the same way (breaks a repeated trap)."""
+        if now - self._last_escape_t < 5.0 and self._last_escape_dir == prefer:
+            prefer = -prefer
+        self._last_escape_dir = prefer
+        self._last_escape_t = now
+        self.turn_dir = prefer
+        self.rev_until = (now + REV_TIME_S) if reverse else 0.0
+        self.turn_until = self.rev_until + TURN_LOCK_S if reverse else now + TURN_LOCK_S
+        self.commit_until = self.turn_until + COMMIT_TIME_S
 
     # ── control loop (10 Hz) ─────────────────────────────────────────────
     def _navigate(self):
@@ -287,25 +307,34 @@ class Robot2LocalNav(Node):
             self._move(-REV_SPEED, 0.0)
             self._status('STUCK')
             return
-        # 2. both sides blocked → reverse, then commit to the more open side
+        # 2. both sides blocked → full escape (reverse + turn + commit)
         if left < STOP_M and right < STOP_M:
-            self.turn_dir = 1 if left > right else -1
-            self.rev_until = now + REV_TIME_S
-            self.turn_until = now + REV_TIME_S + TURN_LOCK_S
+            if now > self.commit_until:          # not already escaping
+                self._start_escape(now, 1 if left > right else -1, reverse=True)
             self._move(-REV_SPEED, 0.0)
             self._status('STUCK')
             return
-        # 3. one side too close → latched pivot away
+        # 3. one side too close → escape away (turn, then commit forward)
         if nearest < STOP_M:
-            if now > self.turn_until:
-                self.turn_dir = -1 if left < right else 1
-                self.turn_until = now + TURN_LOCK_S
+            if now > self.commit_until:
+                self._start_escape(now, -1 if left < right else 1, reverse=False)
             self._move(0.0, self.turn_dir * TURN)
             self._status('BLOCKED')
             return
-        # 4. finish an active pivot lock (anti-oscillation)
+        # 4. finish the pivot (anti-oscillation)
         if now < self.turn_until and self.turn_dir != 0:
             self._move(0.0, self.turn_dir * TURN)
+            return
+        # 5. commit forward to CLEAR the obstacle before re-seeking the goal —
+        #    this is what breaks the pivot-in-place oscillation. Re-escape if a
+        #    fresh obstacle appears right ahead during the commit.
+        if now < self.commit_until and self.turn_dir != 0:
+            if nearest < STOP_M:
+                self._start_escape(now, -self.turn_dir, reverse=True)
+                self._move(-REV_SPEED, 0.0)
+                return
+            self._move(SLOW_SPEED, self.turn_dir * TURN * 0.3)
+            self._status('ESCAPING obstacle')
             return
         self.turn_dir = 0
 

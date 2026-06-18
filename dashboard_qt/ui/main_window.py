@@ -281,7 +281,13 @@ class MainWindow(QMainWindow):
         self._pump_timer.setSingleShot(True)
         self._pump_timer.timeout.connect(self._pump_done)
         self.fire_panel = FirePanel()
-        self.center_tabs.addTab(self.fire_panel, 'AUTONOMY')
+        # AUTONOMY is a DOCK, not a center tab, so the MAP stays visible while
+        # the operator runs the autonomy flow (tabbed with OPERATIONS on the
+        # right; flip between the joystick and the autonomy panel, map always up).
+        self._dock_autonomy = self._dock('AUTONOMY', self.fire_panel,
+                                         Qt.RightDockWidgetArea, 'dockAutonomy')
+        self.tabifyDockWidget(self._dock_ops, self._dock_autonomy)
+        self._dock_autonomy.raise_()
         self.fire_panel.scanRequested.connect(self._scan_area)
         self.fire_panel.placeFireRequested.connect(self._arm_place_fire)
         self.fire_panel.goRequested.connect(self._fire_go)
@@ -314,7 +320,8 @@ class MainWindow(QMainWindow):
 
     def _build_menu(self) -> None:
         view = self.menuBar().addMenu('&View')
-        for dock in (self._dock_fleet, self._dock_video, self._dock_ops):
+        for dock in (self._dock_fleet, self._dock_video, self._dock_ops,
+                     self._dock_autonomy):
             view.addAction(dock.toggleViewAction())
         view.addSeparator()
         fit = QAction('Fit map', self)
@@ -1163,7 +1170,7 @@ class MainWindow(QMainWindow):
     # Bump when the default dock layout changes so stale saved arrangements
     # (e.g. a previous session that squeezed the OPS dock to a sliver) are
     # discarded instead of restored over the new default.
-    LAYOUT_VERSION = 2
+    LAYOUT_VERSION = 3      # bumped: AUTONOMY moved from a center tab to a dock
 
     def _settings(self) -> QSettings:
         return QSettings('GP', 'OperationsCenter')
