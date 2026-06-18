@@ -16,6 +16,8 @@ Serial Protocol (from Arduino):
 """
 
 import math
+import os
+import sys
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
@@ -33,6 +35,20 @@ import threading
 ACCEL_SCALE = 9.81 / 8192.0    # raw → m/s²
 # Gyro:  FS_SEL=1  → ±500°/s → 65.5 LSB/(°/s)
 GYRO_SCALE = math.pi / (180.0 * 65.5)   # raw → rad/s
+
+# Per-unit gyro scale-factor correction (config drive.gyro_scale_correction).
+# Cancels the MPU6050's +/-3% sensitivity tolerance, the residual yaw drift.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                '..', 'common'))
+GYRO_SCALE_CORRECTION = 1.0
+try:
+    from gpcore.config import get_path, load_config
+    _cfg = load_config(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    '..', 'config', 'robot2.yaml'))
+    GYRO_SCALE_CORRECTION = float(get_path(
+        _cfg, 'drive.gyro_scale_correction', 1.0))
+except Exception:
+    pass
 
 
 class Robot2Bridge(Node):
@@ -435,7 +451,7 @@ class Robot2Bridge(Node):
         try:
             ts = int(parts[0])
             enc = [int(parts[i]) for i in range(1, 5)]
-            gz = int(parts[10]) * GYRO_SCALE          # raw -> rad/s
+            gz = int(parts[10]) * GYRO_SCALE * GYRO_SCALE_CORRECTION  # raw -> rad/s, scale-cal
         except (ValueError, IndexError):
             return
         wheels_moving = (self._heading_prev_enc is not None and

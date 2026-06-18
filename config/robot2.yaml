@@ -62,6 +62,14 @@ drive:
   # the value is too small (raise it), under-rotates → lower it.
   wheel_base_m: 0.225
   encoder_heading_weight: 0.3
+  # Per-unit gyro scale-factor correction. Every MPU6050 reads up to +/-3%
+  # off the datasheet 65.5 LSB/(deg/s), and that error is PROPORTIONAL to
+  # total rotation — the residual yaw drift after the 50 Hz heading fix.
+  # MEASURE IT:  python tools/yaw_calib.py 192.168.1.203
+  #   rotate Beta SLOWLY exactly one full physical turn (360, back to a floor
+  #   mark); the tool prints the correction factor — paste it here.
+  # 1.0 = uncalibrated (datasheet nominal). >1 if it under-reads rotation.
+  gyro_scale_correction: 1.0
   max_linear_mps: 0.5
   # Skid-steer pivots scrub four wheels sideways — they need MORE torque
   # than driving. Below ~180 PWM the motors stall-judder ("suffering").
