@@ -26,8 +26,9 @@ _KIND_COLOR = {
 
 
 class FirePanel(QWidget):
+    scanRequested = Signal()           # cover the mapped area + return to base
     placeFireRequested = Signal()      # arm: next map click drops the fire
-    goRequested = Signal()             # send Beta to the fire
+    goRequested = Signal()             # navigate to fire -> pump 5s -> return
     stopRequested = Signal()           # stop + disarm
 
     def __init__(self, parent=None):
@@ -36,15 +37,31 @@ class FirePanel(QWidget):
         root.setContentsMargins(14, 12, 14, 14)
         root.setSpacing(12)
 
-        title = QLabel('FIRE RESPONSE — BETA')
+        title = QLabel('AUTONOMY — BETA')
         title.setStyleSheet('font-size:15px; font-weight:800; letter-spacing:2px;')
         root.addWidget(title)
 
-        sub = QLabel('Place a fire on the map, then send Beta to navigate to '
-                     'it autonomously (optimal path + obstacle avoidance).')
+        sub = QLabel('Two independent autonomous actions over Alpha\'s map. '
+                     'Beta follows the suggested path but its ultrasonics let '
+                     'it deviate around obstacles and merge back.')
         sub.setWordWrap(True)
         sub.setStyleSheet(f'color:{theme.MUTED}; font-size:11px;')
         root.addWidget(sub)
+
+        # ── SCAN: cover the area + return to base ──
+        self.btn_scan = QPushButton('▣ SCAN AREA  (cover map → return to base)')
+        self.btn_scan.setFocusPolicy(Qt.NoFocus)
+        self.btn_scan.setMinimumHeight(44)
+        self.btn_scan.setStyleSheet(
+            f'font-weight:800; font-size:13px; background:{theme.ACCENT}; '
+            'color:#06210f;')
+        self.btn_scan.clicked.connect(self.scanRequested)
+        root.addWidget(self.btn_scan)
+
+        sep = QLabel('— or —')
+        sep.setAlignment(Qt.AlignCenter)
+        sep.setStyleSheet(f'color:{theme.MUTED}; font-size:10px;')
+        root.addWidget(sep)
 
         # ── step 1: place fire ──
         self.btn_place = QPushButton('① PLACE FIRE  (then click the map)')
@@ -62,7 +79,7 @@ class FirePanel(QWidget):
         # ── step 2: go / stop ──
         ctl = QHBoxLayout()
         ctl.setSpacing(10)
-        self.btn_go = QPushButton('② GO TO FIRE')
+        self.btn_go = QPushButton('② GO TO FIRE → PUMP 5s → RETURN')
         self.btn_go.setEnabled(False)
         self.btn_go.setFocusPolicy(Qt.NoFocus)
         self.btn_go.setMinimumHeight(46)
@@ -113,6 +130,7 @@ class FirePanel(QWidget):
                                not in self.fire_lbl.text())
         self.btn_stop.setEnabled(running)
         self.btn_place.setEnabled(not running)
+        self.btn_scan.setEnabled(not running)
 
     def set_status(self, text: str, kind: str = 'idle') -> None:
         self._paint_status(text, kind)

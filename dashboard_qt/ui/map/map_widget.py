@@ -311,6 +311,16 @@ class MapWidget(QWidget):
         self._path_dots.setBrush(QBrush(QColor(theme.ACCENT)))
         self._path_dots.setZValue(4.6)
         sc.addItem(self._path_dots)
+        # Persistent 'suggested' reference route (SCAN/FIRE) — dashed, stays
+        # while the robot follows it so a deviation (leaving the line to dodge
+        # an obstacle, then rejoining) is visible against it.
+        self._ref_path_item = QGraphicsPathItem()
+        rpen = QPen(QColor(theme.MUTED), 0.022)
+        rpen.setStyle(Qt.DashLine)
+        rpen.setCapStyle(Qt.RoundCap)
+        self._ref_path_item.setPen(rpen)
+        self._ref_path_item.setZValue(4.2)
+        sc.addItem(self._ref_path_item)
         self._goal_mark = QGraphicsPathItem()
         self._goal_mark.setPen(QPen(QColor(theme.GOAL_COLOR), 0.025))
         self._goal_mark.setZValue(5)
@@ -715,6 +725,20 @@ class MapWidget(QWidget):
     def clear_path(self) -> None:
         self._path_item.setPath(QPainterPath())
         self._path_dots.setPath(QPainterPath())
+
+    def set_reference_path(self, waypoints: list[tuple[float, float]]) -> None:
+        """Persistent dashed 'suggested' route the robot follows as a guide."""
+        if not waypoints:
+            self.clear_reference_path()
+            return
+        p = QPainterPath()
+        p.moveTo(*waypoints[0])
+        for (x, y) in waypoints[1:]:
+            p.lineTo(x, y)
+        self._ref_path_item.setPath(p)
+
+    def clear_reference_path(self) -> None:
+        self._ref_path_item.setPath(QPainterPath())
 
     def _draw_goal(self) -> None:
         if self._goal is None:

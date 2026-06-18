@@ -55,6 +55,7 @@ from ui.map.projection import (DIST_K, DIST_K_BY_KIND, FrameOffset, Pose,
                                apply_offset, detection_to_world,
                                offset_from_alignment, world_point_to_robot)
 from ui.fire_panel import FirePanel
+from ui.map.coverage import coverage_path
 from ui.mission import MissionExecutor
 from ui.ops_panel import OpsPanel
 from ui.video_panel import VideoPanel
@@ -269,9 +270,19 @@ class MainWindow(QMainWindow):
         # avoidance). Replaces the old master/slave simulation.
         self._fire_xy: tuple[float, float] | None = None
         self._placing_fire = False
-        self._fire_active = False
+        # Autonomous sequence state machine (SCAN and FIRE are independent
+        # multi-leg sequences sharing the mission executor): None | scan_cover
+        # | scan_return | fire_go | fire_pump | fire_return. _seq_home is the
+        # base pose captured at the start of a sequence to return to.
+        self._seq: str | None = None
+        self._seq_home: tuple[float, float] | None = None
+        self._seq_phase_label = ''        # steady-phase status (re-shown after a dodge)
+        self._pump_timer = QTimer(self)
+        self._pump_timer.setSingleShot(True)
+        self._pump_timer.timeout.connect(self._pump_done)
         self.fire_panel = FirePanel()
-        self.center_tabs.addTab(self.fire_panel, 'FIRE TEST')
+        self.center_tabs.addTab(self.fire_panel, 'AUTONOMY')
+        self.fire_panel.scanRequested.connect(self._scan_area)
         self.fire_panel.placeFireRequested.connect(self._arm_place_fire)
         self.fire_panel.goRequested.connect(self._fire_go)
         self.fire_panel.stopRequested.connect(self._fire_stop)
@@ -561,67 +572,142 @@ class MainWindow(QMainWindow):
         self.fire_panel.set_fire(x, y)
         self.fire_panel.log_line(f'fire placed at ({x:+.2f}, {y:+.2f}) m')
 
-    def _fire_go(self) -> None:
-        """Send Beta to navigate autonomously to the placed fire point."""
-        if self._fire_xy is None:
-            self.fire_panel.set_status('place a fire first', 'warn')
-            return
+    # ── shared sequence helpers ───────────────────────────────────────────
+    def _seq_ready(self):
+        """Common preflight for an autonomous sequence. Returns Beta's aligned
+        pose, or None (with a panel reason) if the map/alignment isn't ready."""
+        pose = self._aligned_pose('robot2')
         if self._grid is None:
             self.fire_panel.set_status('NO MAP — start Alpha mapping', 'bad')
-            return
-        if self._aligned_pose('robot2') is None or not self._aligned.get('robot2'):
+            return None
+        if pose is None or not self._aligned.get('robot2'):
             self.fire_panel.set_status('SET POSE Beta on the map first', 'bad')
             self.fire_panel.log_line('Beta must be aligned (SET POSE) for map nav')
-            return
-        if self.active_id != 'robot2':         # goals/bias must target Beta
+            return None
+        if self.active_id != 'robot2':
             self._switch_robot('robot2')
-        self._auto_robot = 'robot2'            # arm autonomy + heartbeat
-        self.cmd['robot2'].send(cmds.CMD_EXPLORE, {'enable': True})
-        fx, fy = self._fire_xy
-        status = self._plan_and_run(fx, fy)
-        if status == 'ok':
-            self._nav_goal = ('robot2', fx, fy)   # enable replan-on-stuck
-            self._nav_replans = 0
-            self._fire_active = True
-            self.fire_panel.set_running(True)
-            self.fire_panel.set_status('EN ROUTE to fire', 'accent')
-            self.fire_panel.log_line('Beta navigating to the fire (A* + ultrasonic dodge)')
-        elif status == 'no_path':
-            self.fire_panel.set_status('NO PATH to the fire', 'bad')
-            self.fire_panel.log_line('no safe route — blocked or unexplored area')
-        else:
-            self.fire_panel.set_status('NO MAP', 'bad')
+        return self._aligned_pose('robot2')
 
-    def _fire_stop(self) -> None:
-        self.mission.cancel('stopped by operator', silent=True)
+    def _seq_arm(self) -> None:
+        self._auto_robot = 'robot2'                 # arm autonomy + heartbeat
+        self.cmd['robot2'].send(cmds.CMD_EXPLORE, {'enable': True})
+
+    def _seq_disarm(self) -> None:
         self._auto_robot = None
         self._nav_goal = None
-        self._fire_active = False
         if 'robot2' in self.cmd:
             self.cmd['robot2'].send(cmds.CMD_EXPLORE, {'enable': False})
             self.cmd['robot2'].send(cmds.CMD_NAV_BIAS, {'vx': 0.0, 'wz': 0.0})
+
+    def _seq_drive_to(self, x: float, y: float) -> bool:
+        """Plan + run a single-goal leg; arms replan-on-stuck. False on no path."""
+        if self._plan_and_run(x, y) != 'ok':
+            return False
+        self._nav_goal = ('robot2', x, y)
+        self._nav_replans = 0
+        return True
+
+    def _seq_finish(self, label: str, kind: str = 'good') -> None:
+        self._seq = None
+        self._seq_phase_label = ''
+        self._seq_disarm()
         self.map.clear_path()
+        self.map.clear_reference_path()
+        self.fire_panel.set_running(False)
+        self.fire_panel.set_status(label, kind)
+        self.fire_panel.log_line(label)
+
+    def _seq_phase(self, label: str) -> None:
+        """Set a steady running-phase status (re-shown after a dodge clears)."""
+        self._seq_phase_label = label
+        self.fire_panel.set_status(label, 'accent')
+
+    # ── SCAN: cover the mapped area, then return to base ──────────────────
+    def _scan_area(self) -> None:
+        pose = self._seq_ready()
+        if pose is None:
+            return
+        self._seq_home = (pose.x, pose.y)
+        res, ox, oy = self._grid_meta
+        prof = self.app_cfg.profile('robot2')
+        half = (prof.footprint or {}).get('half_width_m', 0.10)
+        path = coverage_path(self._grid, res, ox, oy,
+                             lane_m=max(0.20, 2 * half + 0.10),
+                             start=(pose.x, pose.y))
+        if not path:
+            self.fire_panel.set_status('no free area to scan', 'warn')
+            return
+        self._seq_arm()
+        self._seq = 'scan_cover'
+        self.map.set_reference_path(path)           # persistent reference viz
+        self.mission.start('robot2', path, gains=prof.goto)
+        self.fire_panel.set_running(True)
+        self._seq_phase(f'SCANNING — {len(path)} waypoints')
+        self.fire_panel.log_line(f'SCAN: covering the area ({len(path)} waypoints)')
+
+    # ── FIRE: navigate to the fire → pump 5 s → return to start ───────────
+    def _fire_go(self) -> None:
+        if self._fire_xy is None:
+            self.fire_panel.set_status('place a fire first', 'warn')
+            return
+        pose = self._seq_ready()
+        if pose is None:
+            return
+        self._seq_home = (pose.x, pose.y)
+        self._seq_arm()
+        fx, fy = self._fire_xy
+        if self._seq_drive_to(fx, fy):
+            self._seq = 'fire_go'
+            self.map.set_reference_path([(pose.x, pose.y), (fx, fy)])
+            self.fire_panel.set_running(True)
+            self._seq_phase('EN ROUTE to fire')
+            self.fire_panel.log_line('FIRE: navigating to the fire (A* + ultrasonic dodge)')
+        else:
+            self._seq_disarm()
+            self.fire_panel.set_status('NO PATH to the fire', 'bad')
+            self.fire_panel.log_line('no safe route — blocked or unexplored area')
+
+    def _fire_stop(self) -> None:
+        self._pump_timer.stop()
+        self.mission.cancel('stopped by operator', silent=True)
+        self._seq = None
+        self._seq_phase_label = ''
+        self._seq_disarm()
+        if 'robot2' in self.cmd:
+            self.cmd['robot2'].send(cmds.CMD_PUMP, {'on': False})
+        self.map.clear_path()
+        self.map.clear_reference_path()
         self.fire_panel.set_running(False)
         self.fire_panel.set_status('STOPPED', 'muted')
+
+    def _pump_done(self) -> None:
+        if self._seq != 'fire_pump':
+            return
+        if 'robot2' in self.cmd:
+            self.cmd['robot2'].send(cmds.CMD_PUMP, {'on': False})
+        self.fire_panel.log_line('FIRE: pump OFF — returning to start')
+        self._seq = 'fire_return'
+        self._seq_arm()                             # re-arm for the return drive
+        hx, hy = self._seq_home
+        self.fire_panel.set_running(True)
+        self._seq_phase('RETURNING to start')
+        if not self._seq_drive_to(hx, hy):
+            self._seq_finish('FIRE done (no path back)', 'warn')
 
     def _on_waypoint_active(self, idx: int, total: int, x: float, y: float) -> None:
         pose = self._aligned_pose(self.active_id)
         if pose is not None:
             self.map.set_path((pose.x, pose.y), self.mission.remaining())
-            if self._fire_active and self._fire_xy is not None:
-                d = ((pose.x - self._fire_xy[0]) ** 2
-                     + (pose.y - self._fire_xy[1]) ** 2) ** 0.5
-                self.fire_panel.set_status(f'EN ROUTE  {d:.2f} m to fire', 'accent')
-        self.statusBar().showMessage(f'nav: waypoint {idx}/{total}', 3000)
+        if self._seq:
+            self.statusBar().showMessage(
+                f'{self._seq}: waypoint {idx}/{total}', 3000)
 
     def _on_mission_finished(self, reason: str) -> None:
         self.map.clear_path()
         self._on_mission_bias(0.0, 0.0)            # stop streaming bias
         if reason == 'arrived':
             self.map.clear_goal()
-        # Only a no-progress TIMEOUT triggers a replan (not operator cancels /
-        # mode changes). Re-route around the obstacle from the current pose,
-        # bounded so an unreachable goal can't loop forever.
+        # A no-progress TIMEOUT triggers a bounded replan from the current pose.
         if (reason.startswith('timeout') and self._nav_goal
                 and self._nav_replans < 3
                 and self._nav_goal[0] == self.active_id):
@@ -632,19 +718,31 @@ class MainWindow(QMainWindow):
             if self._plan_and_run(gx, gy) == 'ok':
                 return
         self._nav_goal = None
-        # Fire-test status + disarm when this nav ends.
-        if self._fire_active:
-            self._fire_active = False
-            self._auto_robot = None
+
+        # Advance the autonomous sequence.
+        if self._seq is None:
+            return
+        if reason != 'arrived':
+            self._seq_finish(f'STOPPED ({reason})', 'warn')
+            return
+        if self._seq == 'scan_cover':
+            self.fire_panel.log_line('SCAN: area covered — returning to base')
+            self._seq = 'scan_return'
+            self._seq_phase('RETURNING to base')
+            if not self._seq_drive_to(*self._seq_home):
+                self._seq_finish('SCAN done (no path back)', 'warn')
+        elif self._seq == 'scan_return':
+            self._seq_finish('SCAN COMPLETE — back at base', 'good')
+        elif self._seq == 'fire_go':
+            self._seq = 'fire_pump'
+            self._seq_disarm()                      # HOLD at the fire (no wander)
+            self.fire_panel.set_status('PUMP ON — 5 s', 'good')
+            self.fire_panel.log_line('FIRE: arrived — pump ON for 5 s')
             if 'robot2' in self.cmd:
-                self.cmd['robot2'].send(cmds.CMD_EXPLORE, {'enable': False})
-            self.fire_panel.set_running(False)
-            if reason == 'arrived':
-                self.fire_panel.set_status('ARRIVED at fire', 'good')
-                self.fire_panel.log_line('Beta reached the fire ✓')
-            else:
-                self.fire_panel.set_status(f'STOPPED ({reason})', 'warn')
-                self.fire_panel.log_line(f'navigation ended: {reason}')
+                self.cmd['robot2'].send(cmds.CMD_PUMP, {'on': True})
+            self._pump_timer.start(5000)            # firmware also hard-caps 5 s
+        elif self._seq == 'fire_return':
+            self._seq_finish('FIRE DONE — back at start', 'good')
 
     def _pose_picked(self, x: float, y: float, th: float) -> None:
         odom = self.state[self.active_id].telemetry.get('odom') or \
@@ -744,6 +842,16 @@ class MainWindow(QMainWindow):
         if not robot_id == self.active_id:
             return
         nav = payload.get('nav_status', '')
+        # Deviation indicator during an autonomous sequence: Beta's fuser
+        # reports BLOCKED while it dodges an unmapped obstacle off the
+        # reference path. Surfacing it is the visible proof of reactive
+        # autonomy (the map already shows it leaving + rejoining the dashed
+        # reference line).
+        if self._seq and robot_id == 'robot2':
+            if nav.startswith('BLOCKED') or nav.startswith('STUCK'):
+                self.fire_panel.set_status('DEVIATING — dodging obstacle', 'warn')
+            elif self._seq_phase_label:
+                self.fire_panel.set_status(self._seq_phase_label, 'accent')
         if nav.startswith('ARRIVED') and not self.mission.active:
             self.map.clear_goal()       # mission mode clears its own goal
         servo = payload.get('servo_deg')
