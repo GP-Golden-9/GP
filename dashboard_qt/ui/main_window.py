@@ -54,10 +54,8 @@ from ui.map.planner import plan_path
 from ui.map.projection import (DIST_K, DIST_K_BY_KIND, FrameOffset, Pose,
                                apply_offset, detection_to_world,
                                offset_from_alignment, world_point_to_robot)
-from ui.live_handoff import LiveHandoff
-from ui.master_mission import MasterMission
+from ui.fire_panel import FirePanel
 from ui.mission import MissionExecutor
-from ui.mission_panel import MissionPanel
 from ui.ops_panel import OpsPanel
 from ui.video_panel import VideoPanel
 
@@ -266,38 +264,17 @@ class MainWindow(QMainWindow):
         self.map.markersChanged.connect(self.drawer.detections.set_markers)
 
         # ── Master/Slave mission demo (pure dashboard simulation) ──
-        self._sim_robots: set[str] = set()       # robots the mission animates
-        self.master_mission = MasterMission(parent=self)
-        self.mission_panel = MissionPanel()
-        self.center_tabs.addTab(self.mission_panel, 'MISSION')
-        self.mission_panel.startRequested.connect(self._mission_start)
-        self.mission_panel.nextRequested.connect(self.master_mission.next_phase)
-        # abort/interrupt are ROUTED — they hit the live hand-off or the sim,
-        # whichever is running.
-        self.mission_panel.abortRequested.connect(self._mission_abort)
-        self.mission_panel.interruptRequested.connect(self._mission_interrupt)
-        self.mission_panel.autoChanged.connect(self.master_mission.set_auto)
-        self.master_mission.log.connect(self.mission_panel.log_line)
-        self.master_mission.phaseChanged.connect(self.mission_panel.set_phase)
-        self.master_mission.statusChanged.connect(self.mission_panel.set_status)
-        self.master_mission.actionPending.connect(
-            self.mission_panel.set_action_pending)
-        self.master_mission.animate.connect(self._mission_animate)
-        self.master_mission.finished.connect(self._mission_finished)
-
-        # LIVE hand-off (real Beta leg). Reuses the existing planner + mission
-        # executor (navigate) + pump command — no new driving logic. SIM/LIVE
-        # toggle on the panel picks which START runs.
-        self.live_handoff = LiveHandoff(
-            navigate=self._live_navigate,
-            pump=lambda on: self.cmd['robot2'].send(cmds.CMD_PUMP, {'on': on}),
-            stop=self._live_stop, arm=self._live_arm, parent=self)
-        self.live_handoff.log.connect(self.mission_panel.log_line)
-        self.live_handoff.phaseChanged.connect(self.mission_panel.set_phase)
-        self.live_handoff.statusChanged.connect(self.mission_panel.set_status)
-        self.live_handoff.actionPending.connect(
-            self.mission_panel.set_action_pending)
-        self.live_handoff.finished.connect(self._live_finished)
+        # FIRE TEST: place a fire on the map, send Beta to navigate to it
+        # autonomously (reuses the real A* + mission executor + ultrasonic
+        # avoidance). Replaces the old master/slave simulation.
+        self._fire_xy: tuple[float, float] | None = None
+        self._placing_fire = False
+        self._fire_active = False
+        self.fire_panel = FirePanel()
+        self.center_tabs.addTab(self.fire_panel, 'FIRE TEST')
+        self.fire_panel.placeFireRequested.connect(self._arm_place_fire)
+        self.fire_panel.goRequested.connect(self._fire_go)
+        self.fire_panel.stopRequested.connect(self._fire_stop)
 
         self.resizeDocks([self._dock_fleet, self._dock_video], [300, 330],
                          Qt.Horizontal)
@@ -399,8 +376,6 @@ class MainWindow(QMainWindow):
 
     def _render_telemetry(self) -> None:
         for rid, st in self.state.items():
-            if rid in self._sim_robots:
-                continue            # mission is animating this icon — don't fight it
             if not st.telemetry:
                 continue
             rev = st._tele_rev
@@ -457,7 +432,7 @@ class MainWindow(QMainWindow):
         self._log(f'E-STOP {"ENGAGED" if engage else "released"} → {self.active_id}')
 
     def _all_stop(self) -> None:
-        self.master_mission.abort()
+        self._fire_stop()
         self.mission.cancel('cancelled by ALL STOP')
         for rid, client in self.cmd.items():
             client.estop(True)
@@ -503,6 +478,9 @@ class MainWindow(QMainWindow):
         doors, away from walls) and drives it leg by leg; Beta's local fuser
         additionally dodges UNMAPPED obstacles with its ultrasonics. Beta has
         no lidar, so map-aware nav needs it ALIGNED to the map (SET POSE)."""
+        if self._placing_fire:                 # FIRE TEST: this click drops the fire
+            self._place_fire(x, y)
+            return
         rid = self.active_id
         if rid == 'robot2' and not self._aligned.get(rid, False):
             msg = 'Align Beta with SET POSE for map-aware navigation'
@@ -564,173 +542,83 @@ class MainWindow(QMainWindow):
         self._client().send(cmds.CMD_GOAL, {'x': round(rx, 3), 'y': round(ry, 3)})
 
     # ══════════════════════════════════════════════════════════════════════
-    # Master/Slave mission DEMO — pure dashboard simulation (no real CMD_*)
+    # FIRE TEST — place a fire on the map, send Beta to navigate to it
     # ══════════════════════════════════════════════════════════════════════
-    def _map_center(self) -> tuple[float, float]:
-        gb = getattr(self.map, '_grid_bounds', None)
-        if gb:
-            x0, y0, x1, y1 = gb
-            return ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
-        return (0.0, 0.0)
+    def _arm_place_fire(self) -> None:
+        """Arm fire placement: the next map click drops the fire point."""
+        self._placing_fire = True
+        self.map.reset_mode()                  # NAV mode → click reaches _goal_clicked
+        self.fire_panel.set_placing(True)
+        self.fire_panel.log_line('click the map where the fire is…')
+        self.statusBar().showMessage('Click the map to place the FIRE', 6000)
 
-    def _mission_start(self) -> None:
-        if self.mission_panel.is_live():
-            self._live_mission_start()
-        else:
-            self._sim_mission_start()
+    def _place_fire(self, x: float, y: float) -> None:
+        self._placing_fire = False
+        self._fire_xy = (x, y)
+        self.fire_panel.set_placing(False)
+        self.map.add_marker('FIRE', x, y, conf=None, robot='operator',
+                            t_wall=time.strftime('%H:%M:%S'))
+        self.fire_panel.set_fire(x, y)
+        self.fire_panel.log_line(f'fire placed at ({x:+.2f}, {y:+.2f}) m')
 
-    # ── LIVE Beta hand-off (real robot) ───────────────────────────────────
-    def _live_mission_start(self) -> None:
-        """Run the REAL Beta leg: navigate to fire → pump 5 s → return. Refuses
-        (with a reason) unless Beta is map-aligned, a map exists, and a fire
-        target is placed — never drives toward a placeholder."""
-        pose = self._aligned_pose('robot2')
-        if pose is None:
-            self.mission_panel.log_line(
-                'LIVE: Beta has no map pose — SET POSE it on the map first')
+    def _fire_go(self) -> None:
+        """Send Beta to navigate autonomously to the placed fire point."""
+        if self._fire_xy is None:
+            self.fire_panel.set_status('place a fire first', 'warn')
             return
         if self._grid is None:
-            self.mission_panel.log_line(
-                'LIVE: no map yet — build it with Alpha (or load one) first')
+            self.fire_panel.set_status('NO MAP — start Alpha mapping', 'bad')
             return
-        fire_m = self.map.latest_marker('FIRE') or self.map.latest_marker('PIN')
-        if fire_m is None:
-            self.mission_panel.log_line(
-                'LIVE: no FIRE/PIN target on the map — place the fire first '
-                '(detection drops FIRE; or drop a PIN where the fire is)')
+        if self._aligned_pose('robot2') is None or not self._aligned.get('robot2'):
+            self.fire_panel.set_status('SET POSE Beta on the map first', 'bad')
+            self.fire_panel.log_line('Beta must be aligned (SET POSE) for map nav')
             return
-        if self.active_id != 'robot2':          # goals/bias must target Beta
+        if self.active_id != 'robot2':         # goals/bias must target Beta
             self._switch_robot('robot2')
-        self.mission_panel.set_running(True)
-        if not self.live_handoff.start((pose.x, pose.y), (fire_m.x, fire_m.y)):
-            self.mission_panel.set_running(False)
-
-    def _live_navigate(self, target_xy, label: str) -> bool:
-        """Plan a safe route for Beta to target_xy and start the executor.
-        Returns False if there's no pose/map/path (caller aborts cleanly)."""
-        pose = self._aligned_pose('robot2')
-        if pose is None or self._grid is None:
-            return False
-        res, ox, oy = self._grid_meta
-        prof = self.app_cfg.profile('robot2')
-        path = plan_path(self._grid, res, ox, oy, (pose.x, pose.y),
-                         tuple(target_xy),
-                         hard_radius_m=prof.plan_hard_radius_m,
-                         soft_extra_m=prof.plan_soft_extra_m)
-        if not path:
-            return False
-        self._live_arm(True)               # Beta's fuser must be armed to follow
-        self.map.set_goal(*path[-1])
-        self.map.set_path((pose.x, pose.y), path)
-        # Feed the smooth, odometry-safe goto gains (config) so the streamed
-        # bias is as gentle as the robot-side caps.
-        self.mission.start('robot2', path, gains=prof.goto)
-        return True
-
-    def _live_arm(self, enable: bool) -> None:
-        """Arm/disarm Beta's autonomy and keep the heartbeat targeting it (so
-        the existing 2 Hz re-affirm keeps the fuser alive during a leg)."""
-        self._auto_robot = 'robot2' if enable else None
-        self.cmd['robot2'].send(cmds.CMD_EXPLORE, {'enable': enable})
-
-    def _live_stop(self) -> None:
-        self.mission.cancel('live stop', silent=True)
-        self._on_mission_bias(0.0, 0.0)
-
-    def _mission_abort(self) -> None:
-        if self.live_handoff.active:
-            self.live_handoff.abort()
+        self._auto_robot = 'robot2'            # arm autonomy + heartbeat
+        self.cmd['robot2'].send(cmds.CMD_EXPLORE, {'enable': True})
+        fx, fy = self._fire_xy
+        status = self._plan_and_run(fx, fy)
+        if status == 'ok':
+            self._nav_goal = ('robot2', fx, fy)   # enable replan-on-stuck
+            self._nav_replans = 0
+            self._fire_active = True
+            self.fire_panel.set_running(True)
+            self.fire_panel.set_status('EN ROUTE to fire', 'accent')
+            self.fire_panel.log_line('Beta navigating to the fire (A* + ultrasonic dodge)')
+        elif status == 'no_path':
+            self.fire_panel.set_status('NO PATH to the fire', 'bad')
+            self.fire_panel.log_line('no safe route — blocked or unexplored area')
         else:
-            self.master_mission.abort()
+            self.fire_panel.set_status('NO MAP', 'bad')
 
-    def _mission_interrupt(self) -> None:
-        if self.live_handoff.active:
-            self.live_handoff.interrupt()
-        else:
-            self.master_mission.interrupt_action()
-
-    def _live_finished(self, why: str) -> None:
-        self.mission_panel.set_running(False)
+    def _fire_stop(self) -> None:
+        self.mission.cancel('stopped by operator', silent=True)
+        self._auto_robot = None
+        self._nav_goal = None
+        self._fire_active = False
+        if 'robot2' in self.cmd:
+            self.cmd['robot2'].send(cmds.CMD_EXPLORE, {'enable': False})
+            self.cmd['robot2'].send(cmds.CMD_NAV_BIAS, {'vx': 0.0, 'wz': 0.0})
         self.map.clear_path()
-        self.map.clear_goal()
-
-    def _sim_mission_start(self) -> None:
-        """Resolve targets from live markers (fire = latest FIRE; object =
-        latest detection) with placeholder fallbacks, then run the SIMULATED
-        master/slave mission. Nothing is transmitted to any robot."""
-        a = self._aligned_pose('robot1')
-        b = self._aligned_pose('robot2')
-        g = self._aligned_pose('robot3')
-        alpha_pos = (a.x, a.y) if a else (0.0, 0.0)
-        beta_pos = (b.x, b.y) if b else (0.6, 0.0)
-        # Gamma is the esp32 inspector — usually no map pose; start it beside
-        # the others so it visibly drives in for the gas reading.
-        gamma_pos = (g.x, g.y) if g else (alpha_pos[0] + 0.4, alpha_pos[1] - 0.4)
-        cx, cy = self._map_center()
-        fire_m = self.map.latest_marker('FIRE') or self.map.latest_marker('PIN')
-        obj_m = (self.map.latest_marker('HUMAN') or self.map.latest_marker('CAT')
-                 or self.map.latest_marker('DOG'))
-        fire_xy = (fire_m.x, fire_m.y) if fire_m else (cx + 1.2, cy + 0.5)
-        obj_xy = (obj_m.x, obj_m.y) if obj_m else (cx - 1.2, cy - 0.5)
-        fsrc = 'detected' if self.map.latest_marker('FIRE') else \
-            ('PIN' if self.map.latest_marker('PIN') else 'placeholder')
-        osrc = 'detected' if obj_m else 'placeholder'
-        self.mission_panel.log_line(
-            f'targets — fire: {fsrc} ({fire_xy[0]:+.1f},{fire_xy[1]:+.1f}), '
-            f'object: {osrc} ({obj_xy[0]:+.1f},{obj_xy[1]:+.1f})')
-        self.master_mission.configure(alpha_pos, (0.0, 0.0), beta_pos,
-                                      gamma_pos, obj_xy, fire_xy)
-        self.mission_panel.set_running(True)
-        self.master_mission.start()
-
-    def _mission_animate(self, rid: str, x0: float, y0: float,
-                         x1: float, y1: float, secs: float) -> None:
-        """Glide a robot icon A→B on the map (simulation only)."""
-        self._sim_robots.add(rid)
-        prev = getattr(self, '_mission_anim_timer', None)
-        if prev is not None:
-            prev.stop()
-        steps = max(1, int(secs * 20))
-        th = math.atan2(y1 - y0, x1 - x0)
-        cnt = {'i': 0}
-        t = QTimer(self)
-        t.setInterval(50)
-
-        def tick():
-            cnt['i'] += 1
-            f = min(1.0, cnt['i'] / steps)
-            self.map.update_robot(rid, x0 + (x1 - x0) * f,
-                                  y0 + (y1 - y0) * f, th)
-            if f >= 1.0:
-                t.stop()
-        t.timeout.connect(tick)
-        t.start()
-        self._mission_anim_timer = t
-
-    def _mission_finished(self) -> None:
-        prev = getattr(self, '_mission_anim_timer', None)
-        if prev is not None:
-            prev.stop()
-        self._sim_robots.clear()        # release icons back to live telemetry
-        self.mission_panel.set_running(False)
+        self.fire_panel.set_running(False)
+        self.fire_panel.set_status('STOPPED', 'muted')
 
     def _on_waypoint_active(self, idx: int, total: int, x: float, y: float) -> None:
         pose = self._aligned_pose(self.active_id)
         if pose is not None:
             self.map.set_path((pose.x, pose.y), self.mission.remaining())
-        self.statusBar().showMessage(f'mission: waypoint {idx}/{total}', 3000)
+            if self._fire_active and self._fire_xy is not None:
+                d = ((pose.x - self._fire_xy[0]) ** 2
+                     + (pose.y - self._fire_xy[1]) ** 2) ** 0.5
+                self.fire_panel.set_status(f'EN ROUTE  {d:.2f} m to fire', 'accent')
+        self.statusBar().showMessage(f'nav: waypoint {idx}/{total}', 3000)
 
     def _on_mission_finished(self, reason: str) -> None:
         self.map.clear_path()
         self._on_mission_bias(0.0, 0.0)            # stop streaming bias
         if reason == 'arrived':
             self.map.clear_goal()
-        # Drive the live hand-off state machine: this leg ended → pump or
-        # return or finish. Guard means normal click-goals are unaffected.
-        if self.live_handoff.active:
-            self.live_handoff.on_arrived(reason)
-            self._nav_goal = None
-            return
         # Only a no-progress TIMEOUT triggers a replan (not operator cancels /
         # mode changes). Re-route around the obstacle from the current pose,
         # bounded so an unreachable goal can't loop forever.
@@ -739,11 +627,24 @@ class MainWindow(QMainWindow):
                 and self._nav_goal[0] == self.active_id):
             _, gx, gy = self._nav_goal
             self._nav_replans += 1
-            self._log(f'mission {reason} — replanning from current pose '
+            self._log(f'nav {reason} — replanning from current pose '
                       f'({self._nav_replans}/3)')
             if self._plan_and_run(gx, gy) == 'ok':
                 return
         self._nav_goal = None
+        # Fire-test status + disarm when this nav ends.
+        if self._fire_active:
+            self._fire_active = False
+            self._auto_robot = None
+            if 'robot2' in self.cmd:
+                self.cmd['robot2'].send(cmds.CMD_EXPLORE, {'enable': False})
+            self.fire_panel.set_running(False)
+            if reason == 'arrived':
+                self.fire_panel.set_status('ARRIVED at fire', 'good')
+                self.fire_panel.log_line('Beta reached the fire ✓')
+            else:
+                self.fire_panel.set_status(f'STOPPED ({reason})', 'warn')
+                self.fire_panel.log_line(f'navigation ended: {reason}')
 
     def _pose_picked(self, x: float, y: float, th: float) -> None:
         odom = self.state[self.active_id].telemetry.get('odom') or \
