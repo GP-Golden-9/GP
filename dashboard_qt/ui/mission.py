@@ -49,6 +49,8 @@ class MissionExecutor(QObject):
         self._timeout = WP_TIMEOUT_S
         self._tol = WP_TOLERANCE_M
         self._skips = 0
+        self._best_dist = float('inf')
+        self._wp_progress_t = 0.0
         self._timer = QTimer(self)
         self._timer.setInterval(TICK_MS)
         self._timer.timeout.connect(self._tick)
@@ -110,6 +112,8 @@ class MissionExecutor(QObject):
             return
         x, y = self._wps[self._idx]
         self._wp_started = time.monotonic()
+        self._best_dist = float('inf')          # progress tracking (see _tick)
+        self._wp_progress_t = self._wp_started
         self._send(x, y)
         self.waypointActive.emit(self._idx + 1, len(self._wps), x, y)
 
@@ -129,7 +133,15 @@ class MissionExecutor(QObject):
             self._skips = 0
             self._advance()
             return
-        if time.monotonic() - self._wp_started > self._timeout:
+        # PROGRESS-based stuck detection: a far waypoint is fine as long as
+        # Beta keeps getting closer to it — only the LACK of progress (it can't
+        # close the distance) means it's genuinely blocked. This is what stops
+        # a big map from skipping reachable-but-distant waypoints.
+        now = time.monotonic()
+        if dist < self._best_dist - 0.05:        # closing in → reset the clock
+            self._best_dist = dist
+            self._wp_progress_t = now
+        if now - self._wp_progress_t > self._timeout:
             if self._skip_stuck:
                 # flexible: don't abort — skip this waypoint and keep going,
                 # unless several in a row are unreachable (genuinely trapped).
