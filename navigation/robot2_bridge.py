@@ -74,8 +74,10 @@ class Robot2Bridge(Node):
         # ultrasonic stop and clips walls. Forward is capped well below manual
         # (255) and pivots below turn_pwm (255). The speed slider scales within
         # these. Raise only after the obstacle response is trusted.
-        self.declare_parameter('auto_fwd_max_pwm', 185)
-        self.declare_parameter('auto_turn_pwm', 205)
+        # Odometry-safe ceilings (mirror config/robot2.yaml drive.*). Gentle
+        # so autonomous motion never wheelspins and corrupts the yaw.
+        self.declare_parameter('auto_fwd_max_pwm', 175)
+        self.declare_parameter('auto_turn_pwm', 200)
         # Keepalive: firmware stops motors after WATCHDOG_MS (1 s) of serial
         # silence, so a non-stop command must be re-sent periodically — but
         # ONLY while fresh Twists keep arriving (deadman), otherwise a dead
@@ -98,7 +100,7 @@ class Robot2Bridge(Node):
         # to min_pwm/turn_pwm from rest is a torque kick that spins the
         # wheels on carpet — wheelspin the encoders dutifully count as
         # motion (odometry drift). Ramping reaches full PWM in ~175 ms.
-        self.declare_parameter('ramp_pwm_per_s', 600)
+        self.declare_parameter('ramp_pwm_per_s', 300)   # gentle accel (was 600)
 
         # ── State ──
         self.arduino = None

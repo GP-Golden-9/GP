@@ -54,6 +54,7 @@ from ui.map.planner import plan_path
 from ui.map.projection import (DIST_K, DIST_K_BY_KIND, FrameOffset, Pose,
                                apply_offset, detection_to_world,
                                offset_from_alignment, world_point_to_robot)
+from ui.live_handoff import LiveHandoff
 from ui.master_mission import MasterMission
 from ui.mission import MissionExecutor
 from ui.mission_panel import MissionPanel
@@ -271,9 +272,10 @@ class MainWindow(QMainWindow):
         self.center_tabs.addTab(self.mission_panel, 'MISSION')
         self.mission_panel.startRequested.connect(self._mission_start)
         self.mission_panel.nextRequested.connect(self.master_mission.next_phase)
-        self.mission_panel.abortRequested.connect(self.master_mission.abort)
-        self.mission_panel.interruptRequested.connect(
-            self.master_mission.interrupt_action)
+        # abort/interrupt are ROUTED — they hit the live hand-off or the sim,
+        # whichever is running.
+        self.mission_panel.abortRequested.connect(self._mission_abort)
+        self.mission_panel.interruptRequested.connect(self._mission_interrupt)
         self.mission_panel.autoChanged.connect(self.master_mission.set_auto)
         self.master_mission.log.connect(self.mission_panel.log_line)
         self.master_mission.phaseChanged.connect(self.mission_panel.set_phase)
@@ -282,6 +284,20 @@ class MainWindow(QMainWindow):
             self.mission_panel.set_action_pending)
         self.master_mission.animate.connect(self._mission_animate)
         self.master_mission.finished.connect(self._mission_finished)
+
+        # LIVE hand-off (real Beta leg). Reuses the existing planner + mission
+        # executor (navigate) + pump command — no new driving logic. SIM/LIVE
+        # toggle on the panel picks which START runs.
+        self.live_handoff = LiveHandoff(
+            navigate=self._live_navigate,
+            pump=lambda on: self.cmd['robot2'].send(cmds.CMD_PUMP, {'on': on}),
+            stop=self._live_stop, arm=self._live_arm, parent=self)
+        self.live_handoff.log.connect(self.mission_panel.log_line)
+        self.live_handoff.phaseChanged.connect(self.mission_panel.set_phase)
+        self.live_handoff.statusChanged.connect(self.mission_panel.set_status)
+        self.live_handoff.actionPending.connect(
+            self.mission_panel.set_action_pending)
+        self.live_handoff.finished.connect(self._live_finished)
 
         self.resizeDocks([self._dock_fleet, self._dock_video], [300, 330],
                          Qt.Horizontal)
@@ -558,6 +574,87 @@ class MainWindow(QMainWindow):
         return (0.0, 0.0)
 
     def _mission_start(self) -> None:
+        if self.mission_panel.is_live():
+            self._live_mission_start()
+        else:
+            self._sim_mission_start()
+
+    # ── LIVE Beta hand-off (real robot) ───────────────────────────────────
+    def _live_mission_start(self) -> None:
+        """Run the REAL Beta leg: navigate to fire → pump 5 s → return. Refuses
+        (with a reason) unless Beta is map-aligned, a map exists, and a fire
+        target is placed — never drives toward a placeholder."""
+        pose = self._aligned_pose('robot2')
+        if pose is None:
+            self.mission_panel.log_line(
+                'LIVE: Beta has no map pose — SET POSE it on the map first')
+            return
+        if self._grid is None:
+            self.mission_panel.log_line(
+                'LIVE: no map yet — build it with Alpha (or load one) first')
+            return
+        fire_m = self.map.latest_marker('FIRE') or self.map.latest_marker('PIN')
+        if fire_m is None:
+            self.mission_panel.log_line(
+                'LIVE: no FIRE/PIN target on the map — place the fire first '
+                '(detection drops FIRE; or drop a PIN where the fire is)')
+            return
+        if self.active_id != 'robot2':          # goals/bias must target Beta
+            self._switch_robot('robot2')
+        self.mission_panel.set_running(True)
+        if not self.live_handoff.start((pose.x, pose.y), (fire_m.x, fire_m.y)):
+            self.mission_panel.set_running(False)
+
+    def _live_navigate(self, target_xy, label: str) -> bool:
+        """Plan a safe route for Beta to target_xy and start the executor.
+        Returns False if there's no pose/map/path (caller aborts cleanly)."""
+        pose = self._aligned_pose('robot2')
+        if pose is None or self._grid is None:
+            return False
+        res, ox, oy = self._grid_meta
+        prof = self.app_cfg.profile('robot2')
+        path = plan_path(self._grid, res, ox, oy, (pose.x, pose.y),
+                         tuple(target_xy),
+                         hard_radius_m=prof.plan_hard_radius_m,
+                         soft_extra_m=prof.plan_soft_extra_m)
+        if not path:
+            return False
+        self._live_arm(True)               # Beta's fuser must be armed to follow
+        self.map.set_goal(*path[-1])
+        self.map.set_path((pose.x, pose.y), path)
+        # Feed the smooth, odometry-safe goto gains (config) so the streamed
+        # bias is as gentle as the robot-side caps.
+        self.mission.start('robot2', path, gains=prof.goto)
+        return True
+
+    def _live_arm(self, enable: bool) -> None:
+        """Arm/disarm Beta's autonomy and keep the heartbeat targeting it (so
+        the existing 2 Hz re-affirm keeps the fuser alive during a leg)."""
+        self._auto_robot = 'robot2' if enable else None
+        self.cmd['robot2'].send(cmds.CMD_EXPLORE, {'enable': enable})
+
+    def _live_stop(self) -> None:
+        self.mission.cancel('live stop', silent=True)
+        self._on_mission_bias(0.0, 0.0)
+
+    def _mission_abort(self) -> None:
+        if self.live_handoff.active:
+            self.live_handoff.abort()
+        else:
+            self.master_mission.abort()
+
+    def _mission_interrupt(self) -> None:
+        if self.live_handoff.active:
+            self.live_handoff.interrupt()
+        else:
+            self.master_mission.interrupt_action()
+
+    def _live_finished(self, why: str) -> None:
+        self.mission_panel.set_running(False)
+        self.map.clear_path()
+        self.map.clear_goal()
+
+    def _sim_mission_start(self) -> None:
         """Resolve targets from live markers (fire = latest FIRE; object =
         latest detection) with placeholder fallbacks, then run the SIMULATED
         master/slave mission. Nothing is transmitted to any robot."""
@@ -628,6 +725,10 @@ class MainWindow(QMainWindow):
         self._on_mission_bias(0.0, 0.0)            # stop streaming bias
         if reason == 'arrived':
             self.map.clear_goal()
+        # Drive the live hand-off state machine: this leg ended → pump or
+        # return or finish. Guard means normal click-goals are unaffected.
+        if self.live_handoff.active:
+            self.live_handoff.on_arrived(reason)
             self._nav_goal = None
             return
         # Only a no-progress TIMEOUT triggers a replan (not operator cancels /

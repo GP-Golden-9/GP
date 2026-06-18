@@ -32,6 +32,7 @@ class MissionPanel(QWidget):
     abortRequested = Signal()
     interruptRequested = Signal()
     autoChanged = Signal(bool)
+    liveModeChanged = Signal(bool)        # True = LIVE (real robot), False = SIM
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -45,6 +46,17 @@ class MissionPanel(QWidget):
                             'letter-spacing:2px;')
         head.addWidget(title)
         head.addStretch(1)
+        # SIM (pure animation, safe) vs LIVE (real Beta hand-off). Default SIM
+        # so START never moves a robot by surprise — the operator opts in.
+        self.btn_live = QPushButton('SIM')
+        self.btn_live.setCheckable(True)
+        self.btn_live.setChecked(False)
+        self.btn_live.setFocusPolicy(Qt.NoFocus)
+        self.btn_live.setToolTip('SIM = on-map animation only. '
+                                 'LIVE = real Beta navigates + pumps.')
+        self.btn_live.setStyleSheet('font-size:11px; padding:4px 14px;')
+        self.btn_live.toggled.connect(self._live_toggled)
+        head.addWidget(self.btn_live)
         self.btn_auto = QPushButton('AUTO')
         self.btn_auto.setCheckable(True)
         self.btn_auto.setChecked(True)
@@ -146,6 +158,19 @@ class MissionPanel(QWidget):
         self.btn_auto.setText('AUTO' if on else 'MANUAL')
         self.btn_next.setEnabled((not on) and self.btn_abort.isEnabled())
         self.autoChanged.emit(on)
+
+    def _live_toggled(self, on: bool) -> None:
+        self.btn_live.setText('LIVE' if on else 'SIM')
+        self.btn_live.setStyleSheet(
+            f'font-size:11px; padding:4px 14px; font-weight:800; '
+            + (f'background:{theme.MARKER_FIRE}; color:#2a0a0a;' if on else ''))
+        # LIVE has no auto-advance phases / NEXT — it follows the real robot.
+        self.btn_auto.setEnabled(not on)
+        self.btn_start.setText('START LIVE HAND-OFF' if on else 'START MISSION')
+        self.liveModeChanged.emit(on)
+
+    def is_live(self) -> bool:
+        return self.btn_live.isChecked()
 
     # ── public API (driven by main_window) ────────────────────────────────
     def set_running(self, running: bool) -> None:
