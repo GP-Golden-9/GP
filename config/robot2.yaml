@@ -82,7 +82,10 @@ drive:
   # ultrasonic stop and clips walls. Forward capped well under manual's 255,
   # pivots under turn_pwm. The dashboard speed slider scales WITHIN these.
   auto_fwd_max_pwm: 175   # was 185 — gentler autonomous cruise
-  auto_turn_pwm: 200      # was 205 — gentler pivot (still above ~185 stall floor)
+  auto_turn_pwm: 235      # FASTER auto pivot (operator request 2026-06-18; was
+                          # 200). Scaled by the speed slider; push the slider up
+                          # for even snappier turns. Watch for wheel slip on
+                          # carpet — the slip gate + gyro cal absorb some of it.
   # Verified 2026-06-11 (direct-serial test): PWM 255 moves hard, but the
   # old 80..255 mapping put the console's DEFAULT speed at ~PWM 132 —
   # below static friction, robot didn't move at all. Drive PWM now maps
@@ -112,7 +115,7 @@ goto:
   # freshly-calibrated yaw). These cap BOTH the laptop's streamed bias and
   # robot2_local_nav's own output (single source). Slow + smooth > fast.
   max_linear_mps: 0.12       # was 0.15 — conservative cruise
-  max_angular_rps: 0.25      # was 0.40 — slow turns: no slip, no gyro clip
+  max_angular_rps: 0.35      # raised 0.25->0.35 for faster auto turns (2026-06-18)
   kp_distance: 0.5
   kp_angle: 0.8              # was 1.2 — eases into headings, no jerk/overshoot
 

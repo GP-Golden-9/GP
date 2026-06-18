@@ -86,7 +86,7 @@ class Robot2Bridge(Node):
         # Odometry-safe ceilings (mirror config/robot2.yaml drive.*). Gentle
         # so autonomous motion never wheelspins and corrupts the yaw.
         self.declare_parameter('auto_fwd_max_pwm', 175)
-        self.declare_parameter('auto_turn_pwm', 200)
+        self.declare_parameter('auto_turn_pwm', 235)   # faster auto pivot (was 200)
         # Keepalive: firmware stops motors after WATCHDOG_MS (1 s) of serial
         # silence, so a non-stop command must be re-sent periodically — but
         # ONLY while fresh Twists keep arriving (deadman), otherwise a dead
