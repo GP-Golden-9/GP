@@ -41,14 +41,23 @@ GYRO_SCALE = math.pi / (180.0 * 65.5)   # raw → rad/s
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', 'common'))
 GYRO_SCALE_CORRECTION = 1.0
+# Kinematics for the ENCODER-HEADING FALLBACK (used when the GY-87 drops off
+# the I2C bus and the gyro freezes — driven turns still update heading).
+WHEEL_DIAMETER = 0.085
+TICKS_PER_REV = 408
+WHEEL_BASE = 0.225
 try:
     from gpcore.config import get_path, load_config
     _cfg = load_config(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                     '..', 'config', 'robot2.yaml'))
     GYRO_SCALE_CORRECTION = float(get_path(
         _cfg, 'drive.gyro_scale_correction', 1.0))
+    WHEEL_DIAMETER = float(get_path(_cfg, 'drive.wheel_diameter_m', WHEEL_DIAMETER))
+    TICKS_PER_REV = int(get_path(_cfg, 'drive.ticks_per_rev', TICKS_PER_REV))
+    WHEEL_BASE = float(get_path(_cfg, 'drive.wheel_base_m', WHEEL_BASE))
 except Exception:
     pass
+METERS_PER_TICK = (math.pi * WHEEL_DIAMETER) / TICKS_PER_REV
 
 
 class Robot2Bridge(Node):
@@ -162,6 +171,13 @@ class Robot2Bridge(Node):
         self._heading_bias = 0.0          # residual gyro bias (firmware pre-subtracts boot bias)
         self._heading_prev_ts = None      # Mega ts (ms) of last integrated packet
         self._heading_prev_enc = None
+        # Gyro-dropout detection for the encoder-heading fallback: the GY-87
+        # falls off the I2C bus intermittently and the firmware then streams
+        # the last-good gyro reading IDENTICALLY every frame (NOT zero). Frozen
+        # raw samples = dropout → integrate the wheel differential instead.
+        self._gyro_prev_sig = None
+        self._gyro_frozen_n = 0
+        self._gyro_dead = False
         # Front ultrasonics: latest filtered ranges (cm) + forward-block
         # latch. Written by the serial reader thread, read in the command
         # callbacks — plain int reads/writes are atomic under the GIL.
@@ -467,23 +483,54 @@ class Robot2Bridge(Node):
         try:
             ts = int(parts[0])
             enc = [int(parts[i]) for i in range(1, 5)]
-            gz = int(parts[10]) * GYRO_SCALE * GYRO_SCALE_CORRECTION  # raw -> rad/s, scale-cal
+            gx_raw, gy_raw, gz_raw = int(parts[8]), int(parts[9]), int(parts[10])
         except (ValueError, IndexError):
             return
+        gz = gz_raw * GYRO_SCALE * GYRO_SCALE_CORRECTION   # raw -> rad/s, scale-cal
+
+        # ── GY-87 dropout detection → ENCODER-HEADING FALLBACK ──
+        # A live MPU jitters every sample; the GY-87 falling off I2C makes the
+        # firmware stream the last reading IDENTICALLY (or all-zero if unwired).
+        # Either way the gyro is useless, so integrate the wheel differential
+        # instead — driven turns still update heading. Auto-restores on recover.
+        sig = (gx_raw, gy_raw, gz_raw)
+        self._gyro_frozen_n = (self._gyro_frozen_n + 1) if sig == self._gyro_prev_sig else 0
+        self._gyro_prev_sig = sig
+        dead = (self._gyro_frozen_n >= 25
+                or (gx_raw == 0 and gy_raw == 0 and gz_raw == 0))
+        if dead != self._gyro_dead:
+            self._gyro_dead = dead
+            msg = ('GYRO DROPOUT — heading from ENCODERS (driven turns) until '
+                   'it recovers' if dead else
+                   'GYRO recovered — heading back on the gyro')
+            self.get_logger().warn(msg)
+            try:
+                self.log_pub.publish(String(data=msg))
+            except Exception:
+                pass
+
+        # encoder differential (same convention as the laptop odom)
+        d_theta_enc = 0.0
+        if self._heading_prev_enc is not None:
+            pe = self._heading_prev_enc
+            d_left = ((enc[0] - pe[0]) + (enc[1] - pe[1])) / 2.0
+            d_right = ((enc[2] - pe[2]) + (enc[3] - pe[3])) / 2.0
+            d_theta_enc = (d_right - d_left) * METERS_PER_TICK / WHEEL_BASE
         wheels_moving = (self._heading_prev_enc is not None and
                          any(e != p for e, p in zip(enc, self._heading_prev_enc)))
         self._heading_prev_enc = enc
-        # Learn residual bias only when truly idle (no wheel motion AND a tiny
-        # gyro reading) — never during a hand-rotation, which spins the gyro
-        # with the wheels stopped.
-        if not wheels_moving and abs(gz - self._heading_bias) < 0.05:
+
+        # Learn residual bias only when idle AND the gyro is alive — never
+        # during a hand-rotation (gyro spins, wheels still) or a dropout.
+        if not dead and not wheels_moving and abs(gz - self._heading_bias) < 0.05:
             self._heading_bias += 0.01 * (gz - self._heading_bias)
+
         if self._heading_prev_ts is not None:
             dt = (ts - self._heading_prev_ts) / 1000.0
             if 0.0 < dt < 0.1:                        # ignore Mega resets / gaps
-                self._heading += (gz - self._heading_bias) * dt
-                self._heading = math.atan2(math.sin(self._heading),
-                                           math.cos(self._heading))
+                d_theta = d_theta_enc if dead else (gz - self._heading_bias) * dt
+                self._heading = math.atan2(math.sin(self._heading + d_theta),
+                                           math.cos(self._heading + d_theta))
         self._heading_prev_ts = ts
 
     def _parse_sensor_data(self, line: str):
