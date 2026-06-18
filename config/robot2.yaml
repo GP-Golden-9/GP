@@ -69,7 +69,9 @@ drive:
   #   rotate Beta SLOWLY exactly one full physical turn (360, back to a floor
   #   mark); the tool prints the correction factor — paste it here.
   # 1.0 = uncalibrated (datasheet nominal). >1 if it under-reads rotation.
-  gyro_scale_correction: 1.0
+  # MEASURED 2026-06-18 (tools/yaw_calib.py, 3 turns): read 1048.2 deg for
+  # 1080 actual -> gyro under-reads ~3%, factor 1080/1048.2 = 1.0304.
+  gyro_scale_correction: 1.0304
   max_linear_mps: 0.5
   # Skid-steer pivots scrub four wheels sideways — they need MORE torque
   # than driving. Below ~180 PWM the motors stall-judder ("suffering").
