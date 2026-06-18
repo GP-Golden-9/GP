@@ -9,6 +9,10 @@ CS graduation project (Arabic-speaking team). Three robots + a Windows
 PySide6 operator console, talking over a dedicated LAN router (no internet
 required for operation).
 
+**New teammate?** `docs/using_claude_code.md` = how to drive this CLI on the
+project; `docs/field_fixes_and_runbook_2026-06-18.md` = every fix + how to run
+the demo.
+
 ---
 
 ## The fleet
