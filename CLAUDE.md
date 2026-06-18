@@ -104,15 +104,25 @@ flashes via FTDI then ArduinoOTA — see `docs/robot3_flashing.md`.
 
 ---
 
-## Current hardware state & open tickets (2026-06-13)
+## Current hardware state & open tickets (2026-06-18)
 
-- **Beta ultrasonics**: code shipped across firmware/bridge/goto/gateway/config
-  (forward-collision guard + graceful nav slowdown). Sensors NOT yet wired;
-  Mega needs reflashing once they are. Pins: LEFT trig=30/echo=31,
-  RIGHT trig=32/echo=33; 5 V power.
-- **Beta GY-87 IMU**: intermittent on the marginal 3.3 V feed — rewire VCC→5 V.
-  The odometry slip gate + gyro-bias auto-cal depend on a live IMU; with it
-  dead, odometry falls back to encoder-only and drifts.
+> Full session fix list + runbook: **`docs/field_fixes_and_runbook_2026-06-18.md`**.
+> Recent: serial-lag wall-crash fixed (bridge drains to latest packet); yaw
+> integrated in the bridge at 50 Hz + scale-cal `gyro_scale_correction 1.0304`;
+> stall-disarm anti-lockup (`drive.stall_disarm_s 3.0`) + auto back-off/reorient;
+> boot ~3min→~1min (dropped `network-online.target`); odometry moved to the
+> laptop (`dashboard_qt/state/local_odom.py`), Beta runs one reactive node
+> `robot2_local_nav.py`; dashboard **FIRE TEST** tab (place fire → Beta
+> autonomous-navigates) replaced the master/slave sim.
+
+- **Beta ultrasonics**: WIRED (2 front HC-SR04, LEFT trig=30/echo=31,
+  RIGHT trig=32/echo=33, 5 V), operator tilted them slightly outward for FOV.
+  Forward-stop guard + graceful slowdown live.
+- **Beta GY-87 IMU**: ⚠ intermittently DROPS OFF the I2C bus — **rewire
+  VCC 3.3 V→5 V + resolder (top demo ticket)**. When it drops, firmware streams
+  FROZEN non-zero gyro values → heading freezes → map arrow goes static. A
+  power-cycle revives it. Heading needs the gyro (encoder-only fallback offered,
+  not yet built).
 - **Gamma over-voltage (2026-06-13)**: a buck set to 10 V hit the ESP32 + IMU
   + MQ sensor. ESP32 SURVIVED (verified). IMU likely dead (I2C-scan @0x68 to
   confirm; firmware tolerates it). MQ probably OK but re-check

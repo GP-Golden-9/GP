@@ -116,3 +116,34 @@ everything. robot2 kinematics measured: 85 mm wheels, chassis 30×20 cm, track
 reverse in narrow corridors), RESET MAP, rf2o + SLAM at 0.025 m; robot2 camera
 + real fire detection, teleop + encoders + odometry. Repo state advances per
 commit history; SET POSE re-anchors a drifted robot on the shared map.
+
+**SESSION 2026-06-16..18 (full fix list → docs/field_fixes_and_runbook_2026-06-18.md):**
+- Wall-crash from serial lag: bridge serial reader now DRAINS to the latest
+  D: packet (was FIFO → kernel buffer filled → seconds-stale readings).
+- Odometry moved OFF the Pi to the laptop (state/local_odom.py); Pi load
+  ~3.7→1.3. Launch runs ONE reactive node (robot2_local_nav.py) replacing
+  robot2_goto + robot2_autonomous; laptop streams /cmd_vel_bias.
+- Yaw: integrated IN THE BRIDGE at 50 Hz using the Mega ts timestamp, shipped
+  in IMU orientation, gateway forwards. Scale-cal gyro_scale_correction=1.0304
+  (tools/yaw_calib.py). Smooth tuning: turn≤0.25, lin≤0.12, ramp 600→300.
+- STALL-DISARM (the ~30s lock-up = undervoltage cascade): bridge kills motors
+  after drive.stall_disarm_s (3.0s) frozen, blocks same dir cooldown (2s),
+  allows escape, publishes /stall; local_nav reverses + reorients, gives up
+  (STUCK) after 4/20s.
+- Dashboard FIRE TEST tab (ui/fire_panel.py) replaced master/slave sim
+  (master_mission.py, mission_panel.py, live_handoff.py DELETED): place fire →
+  Beta autonomous-navigates (A* over Alpha map + ultrasonic dodge).
+- Boot ~3min→~1min: dropped network-online.target from the units.
+
+⚠ **GY-87 IMU dropout CONFIRMED LIVE 2026-06-18:** gyro fell off I2C, firmware
+streamed FROZEN non-zero values (all-zero dead-detect misses it), heading
+froze, map arrow static. Power-cycle revived it (|gz| 1.65 rad/s, heading
+tracked 360°). **#1 ticket: rewire GY-87 VCC 3.3V→5V + resolder** — it WILL
+drop again. Offered/not-built: encoder-heading fallback. The 2 front
+ultrasonics were tilted slightly outward by the operator (kept as-is; advised
+re-mount lower + add fixed sensors over a pan-servo).
+
+⚠ Alpha NOT touched this session — FIRE TEST needs its map; verify its DDS
+config adopted on next restart. Repo at 61515a9, all pushed, both robots
+deployed (Beta via git bundle over the LAN — its origin/main is stale, base
+the bundle on Beta's actual HEAD; scp to ~ not /tmp = 50MB tmpfs).
