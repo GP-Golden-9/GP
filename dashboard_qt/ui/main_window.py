@@ -655,7 +655,10 @@ class MainWindow(QMainWindow):
         self._seq_arm()
         self._seq = 'scan_cover'
         self.map.set_reference_path(path)           # persistent reference viz
-        self.mission.start('robot2', path, gains=prof.goto)
+        # Follow the coverage path LOOSELY: skip a waypoint it can't reach in
+        # 12 s (don't get trapped in a dead end), and accept 'close enough'.
+        self.mission.start('robot2', path, gains=prof.goto,
+                           skip_stuck=True, wp_timeout=12.0, tol=0.45)
         self.fire_panel.set_running(True)
         self._seq_phase(f'SCANNING — {len(path)} waypoints')
         self.fire_panel.log_line(f'SCAN: covering the area ({len(path)} waypoints)')

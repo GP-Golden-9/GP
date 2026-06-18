@@ -17,6 +17,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 WP_TOLERANCE_M = 0.30          # intermediate waypoints; final = robot's own 0.12
 WP_TIMEOUT_S = 25.0            # no progress to the active waypoint → abort
 TICK_MS = 100                  # 10 Hz — also the heading-bias stream rate
+MAX_SKIPS = 4                  # consecutive unreachable waypoints → give up
 
 # Default goto gains (mirror config/robot2.yaml goto.*); overridden per robot
 # via start(..., gains=...).
@@ -44,6 +45,10 @@ class MissionExecutor(QObject):
         self._wp_started = 0.0
         self._pose: tuple[float, float, float] | None = None   # x, y, th (world)
         self._gains = dict(_DEFAULT_GAINS)
+        self._skip_stuck = False
+        self._timeout = WP_TIMEOUT_S
+        self._tol = WP_TOLERANCE_M
+        self._skips = 0
         self._timer = QTimer(self)
         self._timer.setInterval(TICK_MS)
         self._timer.timeout.connect(self._tick)
@@ -54,7 +59,14 @@ class MissionExecutor(QObject):
 
     # ── lifecycle ─────────────────────────────────────────────────────────
     def start(self, robot_id: str, waypoints: list[tuple[float, float]],
-              gains: dict | None = None) -> None:
+              gains: dict | None = None, *, skip_stuck: bool = False,
+              wp_timeout: float = WP_TIMEOUT_S,
+              tol: float = WP_TOLERANCE_M) -> None:
+        """``skip_stuck`` = follow the path LOOSELY: a waypoint that can't be
+        reached in ``wp_timeout`` is SKIPPED (move to the next) instead of
+        aborting the whole run — so a dead-end waypoint never traps a coverage
+        scan. ``tol`` widens 'close enough' so it isn't rigid about exact points.
+        Gives up only after MAX_SKIPS consecutive unreachable waypoints."""
         self.cancel(silent=True)
         if not waypoints:
             return
@@ -63,6 +75,10 @@ class MissionExecutor(QObject):
         self._idx = -1
         self._pose = None
         self._gains = {**_DEFAULT_GAINS, **(gains or {})}
+        self._skip_stuck = skip_stuck
+        self._timeout = wp_timeout
+        self._tol = tol
+        self._skips = 0
         self._timer.start()
         self.progress.emit(f'mission: {len(waypoints)} waypoint(s) → {robot_id}')
         self._advance()
@@ -99,7 +115,7 @@ class MissionExecutor(QObject):
 
     def _tick(self) -> None:
         if self._pose is None:
-            if time.monotonic() - self._wp_started > WP_TIMEOUT_S:
+            if time.monotonic() - self._wp_started > self._timeout:
                 self._timer.stop()
                 self.missionFinished.emit('timeout (no odometry)')
                 self.progress.emit('mission ABORTED — no odometry from robot')
@@ -108,16 +124,30 @@ class MissionExecutor(QObject):
         px, py, pth = self._pose
         dist = ((px - x) ** 2 + (py - y) ** 2) ** 0.5
         final = (self._idx == len(self._wps) - 1)
-        tol = 0.15 if final else WP_TOLERANCE_M
+        tol = 0.15 if (final and not self._skip_stuck) else self._tol
         if dist <= tol:
+            self._skips = 0
             self._advance()
             return
-        if time.monotonic() - self._wp_started > WP_TIMEOUT_S:
+        if time.monotonic() - self._wp_started > self._timeout:
+            if self._skip_stuck:
+                # flexible: don't abort — skip this waypoint and keep going,
+                # unless several in a row are unreachable (genuinely trapped).
+                self._skips += 1
+                self.progress.emit(
+                    f'waypoint {self._idx + 1} unreachable — skipping '
+                    f'({self._skips}/{MAX_SKIPS})')
+                if self._skips >= MAX_SKIPS:
+                    self._timer.stop()
+                    self.missionFinished.emit('stuck')
+                    return
+                self._advance()
+                return
             self._timer.stop()
             self.missionFinished.emit('timeout')
             self.progress.emit(
                 f'mission ABORTED — waypoint {self._idx + 1} not reached in '
-                f'{WP_TIMEOUT_S:.0f}s (robot stuck?)')
+                f'{self._timeout:.0f}s (robot stuck?)')
             return
         self._emit_bias(px, py, pth, x, y, dist)
 
