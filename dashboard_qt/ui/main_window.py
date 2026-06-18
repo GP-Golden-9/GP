@@ -242,6 +242,12 @@ class MainWindow(QMainWindow):
                                       Qt.LeftDockWidgetArea, 'dockFleet')
 
         self.video = VideoPanel()
+        # The LIVE FEED follows the active robot IF it has a camera; otherwise
+        # it falls back to a camera robot (Beta) — so selecting Alpha (no
+        # camera) still shows Beta's view. _cam_robots is learned at runtime
+        # from which robots actually deliver frames.
+        self._cam_robots: set[str] = set()
+        self._video_robot = self.active_id
         self.video.set_robot(self.active_id)
         self._dock_video = self._dock('LIVE FEED', self.video,
                                       Qt.LeftDockWidgetArea, 'dockVideo')
@@ -567,7 +573,7 @@ class MainWindow(QMainWindow):
         self._placing_fire = True
         self.map.reset_mode()                  # NAV mode → click reaches _goal_clicked
         self.fire_panel.set_placing(True)
-        self.fire_panel.log_line('click the map where the fire is…')
+        self.fire_panel.log_line('click the map where the fire is...')
         self.statusBar().showMessage('Click the map to place the FIRE', 6000)
 
     def _place_fire(self, x: float, y: float) -> None:
@@ -585,7 +591,7 @@ class MainWindow(QMainWindow):
         pose, or None (with a panel reason) if the map/alignment isn't ready."""
         pose = self._aligned_pose('robot2')
         if self._grid is None:
-            self.fire_panel.set_status('NO MAP — start Alpha mapping', 'bad')
+            self.fire_panel.set_status('NO MAP - start Alpha mapping', 'bad')
             return None
         if pose is None or not self._aligned.get('robot2'):
             self.fire_panel.set_status('SET POSE Beta on the map first', 'bad')
@@ -639,7 +645,9 @@ class MainWindow(QMainWindow):
         prof = self.app_cfg.profile('robot2')
         half = (prof.footprint or {}).get('half_width_m', 0.10)
         path = coverage_path(self._grid, res, ox, oy,
-                             lane_m=max(0.20, 2 * half + 0.10),
+                             lane_m=0.6,                # coarse sweeps (simple path)
+                             clearance_m=half + 0.12,   # keep waypoints off walls
+                             max_waypoints=14,          # cap complexity
                              start=(pose.x, pose.y))
         if not path:
             self.fire_panel.set_status('no free area to scan', 'warn')
@@ -672,7 +680,7 @@ class MainWindow(QMainWindow):
         else:
             self._seq_disarm()
             self.fire_panel.set_status('NO PATH to the fire', 'bad')
-            self.fire_panel.log_line('no safe route — blocked or unexplored area')
+            self.fire_panel.log_line('no safe route - blocked or unexplored area')
 
     def _fire_stop(self) -> None:
         self._pump_timer.stop()
@@ -692,7 +700,7 @@ class MainWindow(QMainWindow):
             return
         if 'robot2' in self.cmd:
             self.cmd['robot2'].send(cmds.CMD_PUMP, {'on': False})
-        self.fire_panel.log_line('FIRE: pump OFF — returning to start')
+        self.fire_panel.log_line('FIRE: pump OFF - returning to start')
         self._seq = 'fire_return'
         self._seq_arm()                             # re-arm for the return drive
         hx, hy = self._seq_home
@@ -733,7 +741,7 @@ class MainWindow(QMainWindow):
             self._seq_finish(f'STOPPED ({reason})', 'warn')
             return
         if self._seq == 'scan_cover':
-            self.fire_panel.log_line('SCAN: area covered — returning to base')
+            self.fire_panel.log_line('SCAN: area covered - returning to base')
             self._seq = 'scan_return'
             self._seq_phase('RETURNING to base')
             if not self._seq_drive_to(*self._seq_home):
@@ -743,8 +751,8 @@ class MainWindow(QMainWindow):
         elif self._seq == 'fire_go':
             self._seq = 'fire_pump'
             self._seq_disarm()                      # HOLD at the fire (no wander)
-            self.fire_panel.set_status('PUMP ON — 5 s', 'good')
-            self.fire_panel.log_line('FIRE: arrived — pump ON for 5 s')
+            self.fire_panel.set_status('PUMP ON - 5 s', 'good')
+            self.fire_panel.log_line('FIRE: arrived - pump ON for 5 s')
             if 'robot2' in self.cmd:
                 self.cmd['robot2'].send(cmds.CMD_PUMP, {'on': True})
             self._pump_timer.start(5000)            # firmware also hard-caps 5 s
@@ -798,7 +806,8 @@ class MainWindow(QMainWindow):
         self.fleet.set_active(robot_id)
         self.map.set_active_robot(robot_id)
         self.map.clear_goal()
-        self.video.set_robot(robot_id)
+        self._video_robot = self._pick_video_robot()   # keep Beta's feed if active has none
+        self.video.set_robot(self._video_robot)
         self._update_ops_target()
         up = self._link_state.get(robot_id)
         if up is not None:
@@ -856,7 +865,7 @@ class MainWindow(QMainWindow):
         # reference line).
         if self._seq and robot_id == 'robot2':
             if nav.startswith('BLOCKED') or nav.startswith('STUCK'):
-                self.fire_panel.set_status('DEVIATING — dodging obstacle', 'warn')
+                self.fire_panel.set_status('DEVIATING - dodging obstacle', 'warn')
             elif self._seq_phase_label:
                 self.fire_panel.set_status(self._seq_phase_label, 'accent')
         if nav.startswith('ARRIVED') and not self.mission.active:
@@ -981,8 +990,25 @@ class MainWindow(QMainWindow):
     # ══════════════════════════════════════════════════════════════════════
     # Video, inference, detection → map projection
     # ══════════════════════════════════════════════════════════════════════
+    def _pick_video_robot(self) -> str:
+        """Which robot's feed to show: the active one if it has a camera, else
+        a camera robot (prefer Beta) — so viewing Alpha still shows Beta."""
+        if self.active_id in self._cam_robots:
+            return self.active_id
+        if 'robot2' in self._cam_robots:
+            return 'robot2'
+        return next(iter(self._cam_robots), self.active_id)
+
+    def _refresh_video_robot(self) -> None:
+        target = self._pick_video_robot()
+        if target != self._video_robot:
+            self._video_robot = target
+            self.video.set_robot(target)
+
     def _on_video(self, robot_id: str, meta, jpeg: bytes) -> None:
-        if robot_id != self.active_id:
+        self._cam_robots.add(robot_id)
+        self._refresh_video_robot()
+        if robot_id != self._video_robot:
             return
         st = self.state[robot_id]
         st.on_video_meta(meta)
@@ -1000,7 +1026,9 @@ class MainWindow(QMainWindow):
             self.yolo.submit_frame(fid, jpeg)
 
     def _on_legacy_video(self, robot_id: str, jpeg: bytes) -> None:
-        if robot_id != self.active_id:
+        self._cam_robots.add(robot_id)
+        self._refresh_video_robot()
+        if robot_id != self._video_robot:
             return
         if self.state[robot_id].streams['video'].age_s() < 2.0:
             return

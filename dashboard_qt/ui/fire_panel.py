@@ -37,7 +37,7 @@ class FirePanel(QWidget):
         root.setContentsMargins(14, 12, 14, 14)
         root.setSpacing(12)
 
-        title = QLabel('AUTONOMY — BETA')
+        title = QLabel('AUTONOMY - BETA')
         title.setStyleSheet('font-size:15px; font-weight:800; letter-spacing:2px;')
         root.addWidget(title)
 
@@ -49,7 +49,7 @@ class FirePanel(QWidget):
         root.addWidget(sub)
 
         # ── SCAN: cover the area + return to base ──
-        self.btn_scan = QPushButton('▣ SCAN AREA  (cover map → return to base)')
+        self.btn_scan = QPushButton('SCAN AREA   (cover map, return to base)')
         self.btn_scan.setFocusPolicy(Qt.NoFocus)
         self.btn_scan.setMinimumHeight(44)
         self.btn_scan.setStyleSheet(
@@ -58,13 +58,13 @@ class FirePanel(QWidget):
         self.btn_scan.clicked.connect(self.scanRequested)
         root.addWidget(self.btn_scan)
 
-        sep = QLabel('— or —')
+        sep = QLabel('-  or  -')
         sep.setAlignment(Qt.AlignCenter)
         sep.setStyleSheet(f'color:{theme.MUTED}; font-size:10px;')
         root.addWidget(sep)
 
         # ── step 1: place fire ──
-        self.btn_place = QPushButton('① PLACE FIRE  (then click the map)')
+        self.btn_place = QPushButton('1.  PLACE FIRE   (then click the map)')
         self.btn_place.setCheckable(True)
         self.btn_place.setFocusPolicy(Qt.NoFocus)
         self.btn_place.setMinimumHeight(40)
@@ -79,7 +79,7 @@ class FirePanel(QWidget):
         # ── step 2: go / stop ──
         ctl = QHBoxLayout()
         ctl.setSpacing(10)
-        self.btn_go = QPushButton('② GO TO FIRE → PUMP 5s → RETURN')
+        self.btn_go = QPushButton('2.  GO TO FIRE  ->  PUMP 5s  ->  RETURN')
         self.btn_go.setEnabled(False)
         self.btn_go.setFocusPolicy(Qt.NoFocus)
         self.btn_go.setMinimumHeight(46)
@@ -116,8 +116,8 @@ class FirePanel(QWidget):
     # ── API (driven by main_window) ───────────────────────────────────────
     def set_placing(self, on: bool) -> None:
         self.btn_place.setChecked(on)
-        self.btn_place.setText('① CLICK THE MAP…' if on
-                               else '① PLACE FIRE  (then click the map)')
+        self.btn_place.setText('1.  CLICK THE MAP...' if on
+                               else '1.  PLACE FIRE   (then click the map)')
 
     def set_fire(self, x: float, y: float) -> None:
         self.fire_lbl.setText(f'fire: ({x:+.2f}, {y:+.2f}) m')
