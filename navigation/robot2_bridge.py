@@ -101,6 +101,10 @@ class Robot2Bridge(Node):
         # wheels on carpet — wheelspin the encoders dutifully count as
         # motion (odometry drift). Ramping reaches full PWM in ~175 ms.
         self.declare_parameter('ramp_pwm_per_s', 300)   # gentle accel (was 600)
+        # Stall-disarm: kill motors after this long of commanded-but-frozen,
+        # then block the same direction for the cooldown (escape stays open).
+        self.declare_parameter('stall_disarm_s', 1.2)
+        self.declare_parameter('stall_cooldown_s', 2.0)
 
         # ── State ──
         self.arduino = None
@@ -125,6 +129,15 @@ class Robot2Bridge(Node):
         self._stall_enc = None          # encoder snapshot at motion start
         self._stall_since = None
         self._stall_announced = False
+        # Stall DISARM (anti-lockup): when the motors are commanded but the
+        # encoders stay frozen, a stalled DC motor pulls near locked-rotor
+        # current → the rail sags → the Pi browns out/throttles → control
+        # locks up for ~30 s. Fix: kill the motors fast and BLOCK re-issuing
+        # the same grinding direction for a short cooldown (a DIFFERENT
+        # direction is allowed immediately, so the robot can escape). Also
+        # published on /stall so the local nav can back-off + reorient.
+        self._stalled_motion = None     # the direction that stalled (F/B/L/R)
+        self._stall_block_until = 0.0   # monotonic; same direction blocked until
         # Receive-proof counters: CLI graph introspection is unavailable
         # in discovery-server mode (Humble), so the bridge itself logs
         # arrival of drive topics — first message and every 50th.
@@ -178,6 +191,7 @@ class Robot2Bridge(Node):
         self.log_pub = self.create_publisher(String, '/robot_log', 10)
         self.us_left_pub = self.create_publisher(Range, '/ultrasonic/left', 10)
         self.us_right_pub = self.create_publisher(Range, '/ultrasonic/right', 10)
+        self.stall_pub = self.create_publisher(Bool, '/stall', 10)
 
         # ── Timers ──
         self.create_timer(0.1, self._check_manual_timeout)
@@ -535,10 +549,19 @@ class Robot2Bridge(Node):
     # MOVEMENT COMMANDS
     # ═══════════════════════════════════════
     def _check_stall(self, encs):
-        """Motion commanded but encoders frozen → tell the operator."""
+        """Motion commanded but encoders frozen → DISARM the motors fast.
+
+        A stalled motor pulls locked-rotor current; leaving it grinding sags
+        the rail and browns out the Pi (the ~30 s lock-up). So when the wheels
+        stay frozen under a drive command past stall_disarm_s, stop the motors
+        and latch a cooldown that blocks the SAME direction (escape — a
+        different direction — is still allowed). Re-arms after each cooldown,
+        so a robot driven into a wall stalls→stops→releases repeatedly in
+        short bursts instead of one long current-pinned lock-up."""
         if self.last_motion == 'S' or self.estop:
             self._stall_enc = None
             self._stall_announced = False
+            self._reset_stall()
             return
         now = time.monotonic()
         if self._stall_enc is None:
@@ -546,18 +569,48 @@ class Robot2Bridge(Node):
             self._stall_since = now
             return
         moved = sum(abs(e - p) for e, p in zip(encs, self._stall_enc))
-        if moved >= 5:
+        if moved >= 5:                       # wheels turning → healthy
             self._stall_enc = list(encs)
             self._stall_since = now
             self._stall_announced = False
+            self._reset_stall()
             return
-        if now - self._stall_since > 1.5 and not self._stall_announced:
-            self._stall_announced = True
-            line = (f'MOTOR STALL: cmd={self.last_motion} PWM='
-                    f'{self.pwm_speed} but wheels not turning — blocked, '
-                    'carpet pivot friction, or weak battery (undervoltage?)')
+        disarm_s = float(self.get_parameter('stall_disarm_s').value)
+        if now - self._stall_since > disarm_s and now >= self._stall_block_until:
+            self._stalled_motion = self.last_motion
+            cooldown = float(self.get_parameter('stall_cooldown_s').value)
+            self._stall_block_until = now + cooldown
+            self._send('S')                  # kill the current draw NOW
+            try:
+                self.stall_pub.publish(Bool(data=True))
+            except Exception:
+                pass
+            line = (f'MOTOR STALL: cmd={self.last_motion} PWM={self.pwm_speed} '
+                    f'frozen >{disarm_s:.1f}s — motors DISARMED '
+                    f'(same dir blocked {cooldown:.0f}s; reverse/turn to escape)')
             self.get_logger().warn(line)
             self.log_pub.publish(String(data=line))
+
+    def _reset_stall(self):
+        if self._stalled_motion is not None:
+            self._stalled_motion = None
+            try:
+                self.stall_pub.publish(Bool(data=False))
+            except Exception:
+                pass
+        self._stall_block_until = 0.0
+
+    def _stall_filter(self, cmd: str) -> str:
+        """Block the stalled direction during its cooldown; a different
+        direction clears the stall so the robot can immediately escape."""
+        if self._stalled_motion is None:
+            return cmd
+        if cmd != self._stalled_motion:
+            self._reset_stall()              # escaping in a new direction
+            return cmd
+        if time.monotonic() < self._stall_block_until:
+            return 'S'                       # still cooling down → hold
+        return cmd                           # cooldown over → allow a retry
 
     def _update_ultrasonics(self, left_cm: int, right_cm: int):
         """Store + publish the two front ranges; runs in the reader thread."""
@@ -685,6 +738,7 @@ class Robot2Bridge(Node):
         cmd = self._twist_to_cmd(msg)
         if cmd == 'F' and not self._forward_clear():
             cmd = 'S'
+        cmd = self._stall_filter(cmd)        # anti-lockup: hold a grinding dir
         if cmd != self.last_motion or cmd == 'S':
             self._send(cmd)
 
@@ -701,6 +755,7 @@ class Robot2Bridge(Node):
         cmd = self._twist_to_cmd(msg, is_auto=True)
         if cmd == 'F' and not self._forward_clear():
             cmd = 'S'
+        cmd = self._stall_filter(cmd)        # anti-lockup: hold a grinding dir
         if cmd != self.last_motion or cmd == 'S':
             self._send(cmd)
 

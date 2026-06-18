@@ -69,6 +69,12 @@ RATE_HZ = 10.0
 # range is exactly how it crashes into a wall it can no longer see. After this
 # long with no fresh range, STOP rather than trust a frozen reading.
 RANGE_STALE_S = 1.0
+# Stall escape: after this many bridge /stall events inside the window, give
+# up (stop + report STUCK) instead of grinding forever — the laptop's
+# replan-on-stuck or the operator then takes over.
+STALL_GIVEUP_N = 4
+STALL_WINDOW_S = 20.0
+GIVEUP_STOP_S = 6.0
 # SAFETY: WANDER drives autonomously on the Pi, so if the console vanishes
 # (closed, crashed, or WiFi dropped) nothing would stop it. The dashboard
 # re-affirms AUTONOMOUS at ~2 Hz; if that heartbeat goes stale, STOP. (GOAL
@@ -120,6 +126,14 @@ class Robot2LocalNav(Node):
         self._manual_until = 0.0
         self._dbg = 0
         self._last_status = ''
+        # Stall escape: the bridge publishes /stall when the wheels are frozen
+        # under a drive command (physically wedged, or low obstacle the tilted
+        # sensors miss). We back off + reorient to the more-open side. Repeated
+        # stalls in a short window → give up so we don't grind forever (the
+        # laptop's replan-on-stuck / the operator then takes over).
+        self._stall_escapes = 0
+        self._stall_first_t = 0.0
+        self._giveup_until = 0.0
 
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.status_pub = self.create_publisher(String, '/nav_status', 10)
@@ -129,6 +143,7 @@ class Robot2LocalNav(Node):
         self.create_subscription(Bool, '/explore_enable', self._enable_cb, 10)
         self.create_subscription(Bool, '/emergency_stop', self._estop_cb, 10)
         self.create_subscription(Twist, '/manual_cmd', self._manual_cb, 10)
+        self.create_subscription(Bool, '/stall', self._stall_cb, 10)
         self.create_timer(1.0 / RATE_HZ, self._navigate)
 
         self.get_logger().info('═══════════════════════════════════════')
@@ -176,6 +191,33 @@ class Robot2LocalNav(Node):
         if abs(m.linear.x) > 1e-6 or abs(m.angular.z) > 1e-6:
             self._manual_until = time.monotonic() + MANUAL_OVERRIDE_S
 
+    def _stall_cb(self, m: Bool):
+        """Bridge says the wheels are frozen under a drive command → ESCAPE:
+        back off, then commit to the more-open side for a longer reorient.
+        Triggers even when the ultrasonics read clear (a low obstacle the
+        tilted sensors miss, or high-centred)."""
+        if not (m.data and self.enabled and not self.estop):
+            return
+        now = time.monotonic()
+        if now < self.rev_until:                 # already escaping — ignore dup
+            return
+        if self._stall_escapes == 0 or now - self._stall_first_t > STALL_WINDOW_S:
+            self._stall_escapes = 0
+            self._stall_first_t = now
+        self._stall_escapes += 1
+        self.rev_until = now + REV_TIME_S
+        self.turn_dir = 1 if self.left > self.right else -1
+        self.turn_until = self.rev_until + TURN_LOCK_S * 1.5   # bigger reorient
+        side = 'left' if self.turn_dir > 0 else 'right'
+        self.get_logger().warn(
+            f'STALL -> escape #{self._stall_escapes}: back off + reorient {side}')
+        if self._stall_escapes >= STALL_GIVEUP_N:
+            self._giveup_until = now + GIVEUP_STOP_S
+            self._stall_escapes = 0
+            self.get_logger().error(
+                f'STALL x{STALL_GIVEUP_N} in {STALL_WINDOW_S:.0f}s — GIVING UP, '
+                'stopping (needs replan / operator)')
+
     # ── outputs ──────────────────────────────────────────────────────────
     def _stop(self):
         self.cmd_pub.publish(Twist())
@@ -213,6 +255,13 @@ class Robot2LocalNav(Node):
             return
         if now < self._manual_until:        # operator override active
             self._status('MANUAL')
+            return
+
+        # Gave up after repeated stalls — hold and report, then auto-resume.
+        if now < self._giveup_until:
+            self._reset_latches()
+            self._stop()
+            self._status('STUCK — gave up (replan / operator needed)')
             return
 
         # SAFETY: never drive on a frozen obstacle reading. If the ultrasonic
