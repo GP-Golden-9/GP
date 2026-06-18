@@ -103,7 +103,7 @@ class Robot2Bridge(Node):
         self.declare_parameter('ramp_pwm_per_s', 300)   # gentle accel (was 600)
         # Stall-disarm: kill motors after this long of commanded-but-frozen,
         # then block the same direction for the cooldown (escape stays open).
-        self.declare_parameter('stall_disarm_s', 1.2)
+        self.declare_parameter('stall_disarm_s', 3.0)
         self.declare_parameter('stall_cooldown_s', 2.0)
 
         # ── State ──
