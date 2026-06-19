@@ -1,0 +1,51 @@
+The communication between the software components within each Pi-based robot is done locally using ROS 2 nodes. Sensor drivers publish data like LiDAR scans, IMU measurements, and odometry estimates to dedicated ROS 2 topics. Control and navigation nodes subscribe to these topics to obtain motion commands and localisation updates. This internal communication is completely onboard the robot, with sub-millisecond response times for time-critical operations like skid-steer control and obstacle avoidance.
+
+Communication between the robots and the external laptop is via a 5 GHz wireless network. This link is vital for sending telemetry, maps, commands, and video streams between the mobile units and the operations center.
+
+Depending on the data characteristics, different communication strategies are applied:
+
+Structured data, such as occupancy maps, complementary odometry coordinates, system status, and motor commands, are communicated using a ZeroMQ (ZMQ) gateway. The Pi-based robots run a gateway node that serialises ROS 2 topics with msgpack envelopes and publishes over ZMQ ports. The ESP32-based Gamma robot uses HTTP/JSON telemetry polling, where the operations center polls the ESP32's embedded web server for gas levels and environmental status on a periodic basis.
+
+Camera frames are streamed from the Beta robot to the laptop via ZMQ based TCP video streaming. A dedicated camera publisher node compresses frames using JPEG compression and streams them over a ZMQ publisher port to the YOLO worker at the operations center for low latency and reduced overhead.
+
+The hybrid gateway communication approach balances reliability and performance, avoiding DDS packet drop on wireless links and keeping critical control and state information stable.
+
+The external laptop is the operations center of the communication architecture. It ingests ZMQ and HTTP telemetry streams from the robots, runs visual hazard detection in real time on the YOLO worker thread, and updates the state store.
+
+Detections, system status events, and environmental alerts are handled and visualised on the PySide6 operations console. The centralised model simplifies system management, isolates heavy deep learning workloads and allows concurrent supervision of the Alpha, Beta and Gamma robots from a single dashboard interface.
+
+The message publishing and polling rates are tuned to the hardware characteristics and the ZMQ gateway constrains in order to facilitate stable communication, and effective bandwidth utilisation:
+
+Telemetry update: 20 Hz ( the gateway publishes tele.(full at 20 Hz)
+
+Map update rate: ≤1 Hz (dynamic publication of occupation grid update)
+
+Camera video stream 15 FPS @640x480 (JPEG compressed)
+
+Velocity commands: 10 Hz (published by dashboard only during active teleop)
+
+These rates provide sufficient temporal resolution for navigation, perception, and safety alerts without overloading the 5 GHz wireless link.
+
+An approximate bandwidth analysis was performed to verify that the communication load is within practical limits for standard wireless networks:
+
+LiDAR data 5.5 Hz * 720 ranges * 4 bytes ~ 16Kb/s
+
+Camera stream (compressed) 15 FPS * 50 KB/frame ~ 750 KB/sec
+
+The total estimated bandwidth usage is about 870 KB/s (LiDAR ~16 KB/s + camera ~750 KB/s + auxiliary ~100 KB/s), which is well within the capacity of standard WiFi networks. This proves that the system is capable of reliably operating in indoor environments, like those found in hospitals and industrial facilities.
+
+The monitoring dashboard is shown in Figure 3.7, which provides a real-time interface for supervising the autonomous robotic system. It displays important information including robot status, sensor data, navigation details and alerts to enable efficient system monitoring and operator intervention as needed.
+
+The dashboard is responsible for gathering data from several ROS 2 topics and presenting it in a clear and organised manner. It allows real time supervision of the system without the need of directly interacting with the robot or the underlying ROS tools.
+
+Displays connection status (on-line/off-line)
+
+Displays object class, confidence score, and predicted location
+
+The dashboard is implemented as a native desktop application using PySide6 (Qt for Python) that runs directly on the external laptop. The native approach also offers high-performance rendering of the mapping canvas, low-latency display of the video stream with YOLO safety overlays, and robust threading for the ZMQ and HTTP communication clients. The interface provides a dockable multi-panel layout for clarity, responsiveness and ease-of-use, allowing operators to quickly assess system status and execute commands.
+
+In summary, the communication and dashboard design provide a reliable and efficient framework for real-time monitoring, control and decision making, facilitating safe and effective operation of the robotic system in real-world environments.
+
+Risks, assumptions and external dependencies are associated with the development and deployment of the autonomous robotic system that could affect system performance and project progress. These factors were recognised in the design and implementation phases and were considered throughout the development process to mitigate their effects on system reliability and project outcomes.
+
+The robotic system is used in real environments and depends on a number of hardware and software components that are potential risks. A structured risk assessment was undertaken to identify critical risks, assess their likelihood and consequence and identify appropriate mitigation strategies.

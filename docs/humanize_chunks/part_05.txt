@@ -1,0 +1,39 @@
+The Kilobot Swarm project developed at MIT demonstrated that large numbers of simple robots can collectively perform complex tasks through local communication and minimal sensing. This work showed that individual robots do not need advanced hardware to contribute meaningfully to group behavior. The main insight applied to our project is the emphasis on simple, modular robot design supported by effective communication strategies.
+
+The TurtleBot series was reviewed as a representative example of widely adopted mobile robot platforms. TurtleBot implementations demonstrate the effectiveness of ROS-based software architectures, differential-drive locomotion, and LiDAR-based SLAM for indoor environments. These findings directly influenced our project’s decision to adopt ROS, use a four-wheel skid-steer base controlled kinematically as a differential drive, and rely on 2D LiDAR for mapping and localization.
+
+Commercial systems such as those developed by Amazon Robotics illustrate the feasibility of deploying large-scale multi-robot systems in real-world environments. These systems rely on centralized coordination combined with distributed execution, enabling efficient and reliable operation. This approach aligns with our current master-robot implementation and supports the planned expansion to multiple robots in future project phases.
+
+A review of open-source robotic projects available on platforms such as GitHub provided valuable practical insights. These projects revealed common hardware choices, typical sensor integration patterns, and frequent challenges encountered during SLAM-based navigation. Many of the documented solutions influenced our implementation decisions, particularly in areas such as power management, sensor calibration, and software modularity.
+
+Search and Rescue (SAR) robotics is an important application domain for autonomous and semi-autonomous robotic systems, particularly in environments that are dangerous, inaccessible, or time-critical for human responders. The literature review of SAR robotic systems was conducted to understand the operational requirements, system architectures, and technological solutions commonly adopted in this field. The findings from this review directly informed several design decisions in our project, especially in relation to sensing, navigation, and system robustness.
+
+Urban Search and Rescue (USAR) robots are designed to operate in complex and hazardous environments such as collapsed buildings, fire-affected areas, and industrial accident sites. Both commercial platforms and research prototypes emphasize robustness and operator safety as primary design goals.
+
+From the reviewed USAR systems, several recurring requirements were identified:
+
+Rugged mechanical design: Robots must withstand dust, debris, uneven terrain, and physical impacts.
+
+Multi-sensor perception: The use of complementary sensors such as cameras, LiDAR, thermal sensors, and gas detectors enables better situational awareness.
+
+Remote operation and supervision: Many USAR robots are teleoperated or supervised remotely to keep human operators out of dangerous zones.
+
+Environmental hazard detection: Sensors for detecting smoke, toxic gases, or structural risks are critical for ensuring responder safety.
+
+These characteristics influenced our project’s focus on environmental sensing (gas detection), remote monitoring through a dashboard, and the use of LiDAR and vision sensors to enhance environmental awareness,.
+
+Based on the review of existing Search and Rescue (SAR) robotic systems, several core features were identified as essential to the proposed project. These features directly support effective operation in time-critical and hazardous environments.
+
+One of the most important capabilities is rapid mapping, which enables the system to quickly generate an environmental representation of the operating area. This allows operators to gain situational awareness early in the mission and supports navigation and decision-making in unknown or dynamic environments.
+
+Another critical feature is human detection, as locating survivors is a primary objective in SAR operations. The system must be capable of identifying human presence within the environment to assist rescue teams in prioritizing response efforts and planning safe extraction.
+
+In addition, hazard awareness plays a vital role in ensuring mission safety. The ability to detect dangerous conditions or obstacles helps protect the robotic platform from damage and reduces risk to human responders who may later enter the environment.
+
+Finally, real-time monitoring and reliable communication are essential for effective system operation. Operators require continuous feedback on robot status and sensor data, which depends on stable and dependable communication links, particularly in challenging and unpredictable SAR environments.
+
+Simultaneous Localization and Mapping (SLAM) is a fundamental technology for autonomous mobile robots operating in unknown environments. It enables a robot to construct a map of its surroundings while simultaneously estimating its own position within that map. This capability is especially important in search and rescue scenarios, where prior knowledge of the environment is often unavailable or unreliable.
+
+The SLAM problem is inherently challenging due to the strong interdependence between mapping and localization. An accurate map cannot be created without precise knowledge of the robot’s position, while reliable localization depends on the availability of a consistent map. As a result, both processes must be solved concurrently. To address this challenge, SLAM systems typically rely on probabilistic estimation methods that combine sensor measurements and motion data to incrementally refine both the map and the robot’s pose over time,.
+
+Several SLAM algorithms were reviewed to determine the most suitable approach for the proposed system, with particular emphasis on compatibility with the Robot Operating System (ROS), computational requirements, and sensor suitability.

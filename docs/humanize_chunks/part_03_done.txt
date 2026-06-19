@@ -1,0 +1,99 @@
+The central challenge underpinning this project is: How can we engineer a robust multi-robot system that can autonomously explore and gather data in unknown environments, and generate actionable intelligence through the coordination of sensor deployment and information sharing?
+
+The motivation for this project comes from real-world operational requirements:
+
+Search and Rescue Operations: Rescue teams are confronted with difficult decisions when buildings collapse, are flooded or subjected to hazardous conditions. Robotic systems can speed up the time of the first evaluation. Our system is specifically designed to meet the need of rapid mapping of the environment combined with search for objects of interest and identification of hazards.
+
+Educational Motivation: This project will provide Computer Engineering students with practical exposure to embedded systems programming, distributed computing, artificial intelligence, sensor systems and systems engineering. It bridges the gap between theoretical concepts taught in university courses and the practical implementation challenges.
+
+Research Contribution: SLAM, sensor fusion and object detection have been studied separately but their integration in a practical multi-robot platform requires new engineering work. We demonstrate the practical coordination of multi-robots by our approach of three specialised robots with shared mapping and distributed sensing.
+
+Sensor Fusion: The integration of multiple odometry sources, such as wheel encoders, gyroscope data and laser scan matching, demonstrates the power of multi-sensor integration. This technique improves the localisation accuracy over odometry alone.
+
+Edge Computing Running Deep Learning Inference Responsively on Low-Power Robots Solves a practical problem in robotics: how to run computationally-intensive algorithms under power and latency constraints.
+
+Standardisation under ROS The mapping and intervention robots are developed in the ROS 2 ecosystem which guarantees the reproducibility and extensibility of these components. The two Raspberry Pi robots (Alpha and Beta) run ROS 2 Humble, while the PySide6 operations center and the shared common/gpcore core library are ROS-free. The Gamma robot, based on an ESP32, runs no ROS at all, but exposes a plain HTTP/JSON interface instead.
+
+One of the main incentives for this project was the opportunity to learn new skills beyond the typical Computer Engineering curriculum:
+
+Programming: Get to know ROS, YOLO and robotic programming paradigms.
+
+Electronics: Basics of circuits, motor control, sensor integration.
+
+Mechanical Design: Learn 3D design with Inventor and metal fabrication.
+
+System Integration: Combining hardware and software to create a working system.
+
+The project is structured around defined objectives:
+
+Develop 3 specialised robot platforms that, when combined, perform all required functions:
+
+Alpha Robot (Mapper): SLAM with slam_toolbox, environmental mapping with LiDAR, rf2o laser odometry
+
+Beta Robot (Intervener) Camera integration YOLO -based fire detection Fire intervention using water pump Encoder-based navigation
+
+Gamma Robot (Inspector) : MQ-5 gas sensor detection, ESP32 HTTP telemetry environment monitoring, hazard alert
+
+Robots operate autonomously in structured indoor environments
+
+YOLO-based detection for fire, smoke and flame hazard identification, and general object detection as an alternative model configuration
+
+The gas sensor identifies dangerous gases and gives up-to-the-minute information about the environment.
+
+Introduce a map representation that supports coordination:
+
+Methods of designing environmental maps based on LIDAR data
+
+Implement Map sharing between robots and operations center using ZMQ gateway
+
+Implement sensor fusion algorithms for accurate localisation, using rf2o laser odometry for the mapping robot, and a custom complementary encoder-gyroscope fusion for the intervention robot.
+
+Fusion algorithms provide better accuracy than single sensor odometry alone.
+
+Add deep learning models for visual hazard detection:
+
+Detect fire, smoke and flame hazards in the environment, with selectable models for general detection.
+
+Implement ZMQ/msgpack gateway protocol for Pi based robots and HTTP/JSON for ESP32 based robot
+
+ZMQ over 5 GHz WiFi for structured and reliable data transmission with acknowledged commands
+
+Develop a dashboard for the operators to monitor and command the system:
+
+Create a test environment to show what the robot can do:
+
+System documentation:
+
+Alpha, Beta, and Gamma: Design and assembly of three custom mobile robot platforms
+
+Sensor integration (LIDAR, IMU, encoders, camera, ultrasonic sensors)
+
+slam_toolbox + rf2o laser odometry SLAM implementation
+
+Communication with ZMQ/msgpack protocol for Pi robots and HTTP/JSON protocol for ESP32
+
+Monitoring and control dashboard interface Autonomous Mission Execution from the Operations Center: AREA-COVERAGE SCANNING of the shared map (SCAN AREA) and GO TO FIRE -> dispense (5s pump) -> RETURN sequence, both based on A* planner and reactive obstacle avoidance
+
+The project assumes that:
+
+WiFi network (5GHz) will be available in the operating area.
+
+Deep learning inference for embedded systems: an overview
+
+Four-wheel configuration was selected for better torque and stability
+
+Chassis made of aluminium sheet (1m x 1m, 1.5mm thickness)
+
+Beta robot has 85 mm wheels and 25GA370 encoder motors, Alpha has driven wheels without encoder-based odometry (it uses rf2o laser odometry instead), Gamma is ESP32-based with independent motor control
+
+Raspberry Pi robots run ROS 2 Humble on Ubuntu Linux Operations center is a native PySide6 desktop application (no ROS) ESP32 robot runs firmware with an HTTP/JSON interface (no ROS)
+
+Per-robot ROS 2 DDS traffic is restricted to localhost only. The only network door is the ZMQ/msgpack gateway.
+
+Communication is through a shared WiFi network (5 GHz for Raspberry Pi robots; 2.4 GHz for ESP32 robot)
+
+HTTP/JSON for ESP32 robot and ZMQ/msgpack protocol for reliable data transmission between Pi-based robots and operations center
+
+Limited experience in electronics, mechanical design and robotics hardware
+
+Steep learning curve for new skills (3D design, circuit design, etc.)

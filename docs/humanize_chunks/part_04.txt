@@ -1,0 +1,71 @@
+The project team was divided into specialized groups to handle different aspects of the project:
+
+Programming Team: Responsible for ROS integration, SLAM implementation, YOLO integration, and dashboard development
+
+Design Team: Responsible for 3D chassis design using Inventor, 2D conversion for fabrication, and mechanical assembly
+
+Electronics Team: Responsible for circuit design, motor driver integration, sensor connections, and power management
+
+Environment Team: Responsible for building the test environment (4x4 meter area with 4 rooms)
+
+Despite this division, each team member maintained general understanding of other project areas to ensure effective collaboration and integration.
+
+This dissertation is organized into the following chapters:
+
+Establishes the context, motivation, and objectives of the project. Provides background on multi-robot systems and defines the problem statement, scope, and constraints.
+
+Surveys existing research and systems in relevant domains: swarm robotics, SLAM, object detection, and communication frameworks. Reviews prior work that informed this project's design.
+
+Details the system architecture, design process, and specification of hardware and software components.
+
+Documents the practical realization of the design, including hardware assembly, software implementation, and integration.
+
+Presents testing approach and results validating system functionality.
+
+Summarizes achievements and outlines potential future enhancements.
+
+This chapter presents a comprehensive review of existing research, projects, and systems related to the Swarm Robot System. Before beginning the implementation phase of this project, extensive research was conducted to understand the current state of the art in multi-robot systems, SLAM technology, object detection, and related fields.
+
+The literature review served several important purposes:
+
+Understanding existing approaches and their strengths and limitations
+
+Identifying suitable technologies and tools for our implementation
+
+Learning from previous implementations and avoiding common pitfalls
+
+Determining the components and architecture needed for our system
+
+With our limited prior exposure to robotics hardware and mechanical systems, this research phase was particularly critical. We needed to understand not just the theoretical concepts but also the practical implementation details of similar projects.
+
+Various coordination strategies have been proposed in the literature to enable collective behavior in swarm robotic systems. These strategies are classified in Table 2.1.
+
+Swarm robotics represents a research paradigm in which multiple robots cooperate to achieve common objectives through decentralized control and local interactions. This approach is inspired by natural systems such as ant colonies, bee swarms, and bird flocks, where complex collective behavior emerges from relatively simple individual agents following basic rules.
+
+Unlike traditional single-robot systems, multi-robot and swarm systems emphasize collaboration, redundancy, and adaptability. Through the conducted literature review, several fundamental characteristics were identified as essential for the success of multi-robot systems:
+
+Coordination: Robots must coordinate their actions to avoid conflicts, share tasks, and achieve collective goals efficiently. Coordination mechanisms may be centralized, decentralized, or hybrid, depending on system scale and application requirements ,.
+
+Communication: Reliable communication is a core requirement, enabling robots to exchange state information, sensor data, and task assignments. Communication limitations directly affect coordination quality and system performance ,.
+
+Scalability: A well-designed swarm system should function effectively with varying numbers of robots. Scalability ensures that adding or removing robots does not significantly degrade system performance ,.
+
+Robustness: Multi-robot systems must tolerate individual robot failures without complete system breakdown. Redundancy and distributed control increase resilience in dynamic or hazardous environments ,.
+
+These principles guided the analysis of existing systems and influenced the design decisions adopted in this project.
+
+Swarm robotics is a research paradigm in which multiple robots cooperate to accomplish shared tasks through distributed control and local interactions. The concept is inspired by biological systems such as ant colonies and bee swarms, where complex group behavior emerges from simple rules followed by individual agents rather than centralized intelligence.
+
+Through the literature review conducted in this project, several core principles were identified as essential for the design of effective multi-robot systems. These principles directly influenced the architectural and implementation decisions adopted in our project.
+
+Coordination: Robots must coordinate their actions to avoid conflicts and efficiently achieve shared objectives. In our project, this concept motivated the adoption of a master-centered design, where one robot currently performs mapping and decision-making, with the structure prepared for future multi-robot coordination.
+
+Communication: Reliable communication is critical for information sharing between robots. This requirement influenced our focus on designing a stable communication architecture capable of supporting data exchange between robots and external processing units.
+
+Scalability: Multi-robot systems should maintain functionality as the number of robots increases. This concept guided our use of modular software components and ROS-based design, allowing future extension without major system redesign.
+
+Robustness: A swarm system should continue functioning even if individual robots fail. Although full redundancy is not yet implemented, this principle informed our decision to separate sensing, perception, and control into independent modules to minimize single points of failure.
+
+Several path planning algorithms have been proposed for multi-robot navigation in dynamic environments. A comparison of common approaches is provided in Table 2.2.
+
+Several existing multi-robot and swarm systems were reviewed to understand both theoretical Several academic, commercial, and open-source systems were reviewed to understand how multi-robot concepts are applied in real-world scenarios and how they can inform system design.

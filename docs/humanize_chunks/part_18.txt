@@ -1,0 +1,71 @@
+At the end of this phase, the base platform demonstrated mechanical stability and smooth manual motion.
+
+Phase 3: Electronics Integration (Weeks 5–8)
+
+The third phase involved integrating all electronic components and establishing reliable electrical and communication connections.
+
+Tasks completed during this phase included:
+
+Mounting the Raspberry Pi 4 (Alpha), Raspberry Pi 3B+ (Beta), and Arduino Mega microcontrollers onto vibration-isolated mounts, and setting up the ESP32 DevKit on Gamma
+
+Wiring motor drivers and routing high-current motor power lines
+
+Installing sensors at positions defined during the CAD design stage
+
+Creating organized wiring harnesses to improve modularity and maintenance
+
+Establishing serial communication between the Raspberry Pi and Arduino
+
+Special attention was given to separating power lines from signal lines to reduce electrical noise and interference.
+
+Phase 4: System Testing and Debugging (Weeks 9–10)
+
+The final phase of the hardware implementation focused on full system validation.
+
+Verifying that all sensors provided consistent and correct data simultaneously
+
+Identifying and resolving integration issues related to power stability and signal integrity
+
+Performing extended runtime tests to evaluate system robustness
+
+By the end of this phase, all three robotic platforms operated reliably as complete, independent hardware systems.
+
+The power system was identified as a critical component of the hardware implementation. Early testing revealed that inadequate power distribution could result in severe operational issues, including:
+
+Voltage brownouts during motor startup due to high inrush current
+
+Reliable power delivery is a critical requirement for mobile robotic systems, particularly in swarm and autonomous platforms where unstable voltage levels can lead to system resets, sensor malfunction, or permanent hardware damage. The proposed swarm robot system incorporates a dedicated, protected, and monitored power architecture designed to ensure stable operation under dynamic load conditions while maintaining hardware safety.
+
+Battery capacity is sized per robot. Alpha (the mapping platform) uses a 3S LiPo pack (11.1 V, 5200 mAh, ~57.7 Wh); Beta (the intervention platform) uses a smaller 3S LiPo pack (11.1 V, 2200 mAh, ~24.4 Wh); and Gamma (the ESP32 inspector) runs on three series lithium-ion 18650 cells (~11.1 V nominal). This per-platform sizing balances energy density, weight, and discharge capability against each robot's payload and runtime needs.
+
+To accommodate the heterogeneous voltage requirements of the system components, the power tree distributes power directly from the 3S LiPo battery (11.1 V nominal) to the high-draw actuators (L298N motor drivers and water pump relay). Logic is isolated using an adjustable step-down (buck) converter. The system standardizes on a single regulator model across all three robots - the XL4015 5 A adjustable buck (4.8-38 V input, 1.25-36 V output, SKU DC102) - set on each mobile robot to target ~5.25 V at the Pi pins (raised to offset the ~0.4-0.5 V delivery-path drop) to power the Raspberry Pi and Arduino Mega logic. This complete separation of logic and actuator power domains prevents motor-induced voltage drops and signal noise from causing computational brownouts and resets.
+
+To protect the system against voltage instability and transient current spikes, multiple safety mechanisms were integrated. Capacitive filtering using 1000 µF capacitors was applied at the buck-converter output to suppress high-frequency noise and smooth voltage fluctuations caused by sudden load changes. Furthermore, inline fuses rated at 15 A and 10 A were installed on the main power distribution line to safeguard against overcurrent conditions and short circuits. The fuse ratings were carefully selected based on the maximum expected system load, ensuring effective protection while avoiding nuisance tripping during normal operation.
+
+In addition to power regulation and protection, a voltage divider circuit was designed for ADC-based battery monitoring; however, it was not implemented in the active firmware. To prevent deep discharge of the LiPo battery and ensure hardware safety, physical LED voltmeter panels are mounted directly on each robot's chassis for manual preflight checks and monitoring, supplemented by software diagnostics monitoring the Pi's internal undervoltage flags.
+
+A summary of the implemented power architecture and its components is provided in Table 4.1.
+
+The software implementation of the autonomous robotic system represents the core operational layer that enables perception, mapping, communication, and monitoring. This implementation was carried out incrementally over the first four months of the project and closely follows the development phases documented in the project’s GitHub repository (https://github.com/GP-Golden-9/GP).
+
+The software architecture is designed as a distributed system, where real-time robotic operations are executed on the robot, while computationally intensive tasks and visualization are handled on an external laptop. This separation was necessary due to hardware limitations and to ensure real-time performance and system stability.
+
+All implemented software components are modular, independently testable, and integrated gradually to form a complete working system.
+
+The SLAM implementation was developed to allow the robot to autonomously explore unknown indoor environments while simultaneously building a map and estimating its own position. This capability forms the spatial foundation for navigation, monitoring, and system supervision.
+
+The SLAM subsystem is implemented using a LiDAR-based 2D SLAM pipeline running locally on the Alpha robot. The RPLidar A1M8 publishes laser scan data on the /scan topic, which is processed by the async_slam_toolbox_node from the slam_toolbox package, using dynamic configuration from mapping/mapper.yaml to generate a high-resolution 2.5 cm/cell occupancy grid map.
+
+Configuring the LiDAR driver to publish stable and continuous scan data
+
+Defining coordinate frames for the robot base, LiDAR, and map
+
+Running the SLAM algorithm while the robot moves manually and autonomously
+
+The robot’s estimated pose (x, y, θ)
+
+The SLAM and navigation processes are initialized through ROS 2 launch files on Alpha. The main launch file robots/robot1/launch/robot1.launch.py starts the following nodes:
+
+rplidar_node (rplidar_ros): LiDAR driver publishing /scan at port /dev/rplidar
+
+rf2o_laser_odometry: uses scan matching to publish /odom and odom->base_link TF
