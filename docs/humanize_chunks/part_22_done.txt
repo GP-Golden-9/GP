@@ -1,0 +1,37 @@
+where (x_i, y_i) is the physical ground-truth position and (x̂_i, ŷ_i) is the odometry estimated position. Rotational drift was measured in degrees as the difference between the estimated orientation at the end of the trajectory and the expected orientation .
+
+Environmental sensing was validated by measuring the response of the MQ-5 gas sensor of the Gamma robot to controlled gas exposure. The indicators measured were the raw ADC sensor readings, response time, threshold alert triggering and polling latency via HTTP/JSON. The network was exercised with the protocol soak harness (tools/soak_test.py) and fixed acceptance gates for telemetry sequence-loss, video FPS and capture-age, map and health inter-arrival gaps, and command-to-ACK round-trip time. No full 30 min real-robot soak has been done; the baseline artefacts recorded are short (~0.4 min) runs against the in-process simulator (127.0.0.1), so the network numbers below are reported as sim-soak measurements and acceptance-gate targets and not as a 30 min field run.
+
+The protocol soak harness was used to assess network stability by measuring telemetry sequence loss, video FPS and capture age, map and health inter-arrival gaps, and command-to-ACK latency on the critical ZeroMQ gateway channels. The recorded soak artefacts are short (~0.4-minute) simulator runs over loopback, and not a continuous 30-minute real-robot operating window, which has not yet been captured. The test included motion control messages, sensor telemetry, compressed video streaming and SLAM map updates, as these streams represent the main communication load of the system.
+
+This section contains the experimental results obtained during the execution of the test cases as defined. The results are grouped according to the robot’s major subsystems, so that each area of performance can be assessed independently, before addressing the full integrated behaviour of the system.
+
+The slam_toolbox algorithm (async_slam_toolbox_node) was able to successfully capture the geometric boundaries of the testing area at a 0.025 m resolution, generating a usable occupancy grid for operator visualisation and path planning. The room divisions were well represented, and the map produced was consistent with the physical structure of the environment.
+
+No gross distortions or double-wall smearing were found, validating the use of rf2o laser odometry for scan matching on Alpha. Generated map was sent over ZMQ port 5557 at <=1 Hz. Very stable behaviour for path planning.
+
+By offloading YOLO inference to a crash-isolated subprocess on the operations laptop, the system was able to maintain real-time visual perception without impacting the performance of the Pi. The PySide6 dashboard was able to process the frames at the required KPI of >=12 FPS, providing fluid visualisation to the operator.
+
+The stream was JPEG compressed to keep the network efficiency over port 5560. Per-class map-marker confidence floors are defined in config/fleet.yaml (person 0.70, dog/cat/fire 0.60). The fire-alarm gate is independent, set to 0.80 (fire_conf_min) , boosted after false alarms in night-room tests. Quick caveat, fire.pt's measured confidence on real fire photos is only 28-37%, so at the 0.80 alarm gate, the audible alarm essentially never triggers with the current model. The detections panel still lists everything the model sees, and the F9 key drills the alarm UX. The fix is a better trained model, not a lower threshold.
+
+The drift was significantly reduced by fusing the 25GA370 encoders and the GY-87 IMU gyroscope Z-axis rate through a custom complementary filter. Gyro bias auto-calibration (learned during stationary periods >=0.5 seconds) helped rotational tracking and the wheel-slip rejection gate (which detects pivot scrub and reverts heading tracking to pure gyro) protected translation accuracy on carpeted floors.
+
+There was still some residual drift over longer, multi-turn paths from wheel slip, floor friction variation and accumulated odometry uncertainty. This drift is bounded by the localisation and odometry calibration summarised in table 5.3.
+
+The MQ-5 gas sensor on the Gamma ESP32 reliably detected levels of gas during testing. The Esp32Link on the dashboard polled the raw ADC values at 3 Hz and when they exceeded the 3000 ADC-count alarm threshold, it triggered a latched local alarm buzzer on the robot and a pulsing warning banner on the PySide6 console.
+
+The environmental sensing path supports near real-time alerts on the monitoring interface with the sensor being polled at 3 Hz and alerts being raised immediately on threshold crossing.
+
+The 5 GHz network handled the wireless communication load of ZeroMQ and msgpack nicely. The command inputs (10 Hz virtual joystick commands) and telemetry data used very little bandwidth, while the compressed video stream was the most bandwidth-hungry.
+
+Latency achieved the required KPIs (P95 command ACK <=150 ms, map latency <=2 seconds). To support low-latency operation, ROS 2 DDS traffic was kept local to the loopback interface.
+
+The experimental results empirically validate the system architecture and also reveal constraints inherent to academic robotic prototypes operating in physical environments. The overall tests confirm the feasibility of the implemented system to perform indoor mapping, perception, environmental sensing and dashboard-based monitoring in an integrated manner.
+
+Results also show that the performance of the complete system depends on the trade-off between onboard computation, external processing, sensor reliability and network stability. Finding this balance was a major design consideration throughout the project.
+
+The system, as a complete cyber-physical platform, satisfied the basic requirements of a search and rescue robotics framework. The robot successfully mapped the test environment, transferred sensory and visual data, identified dangerous levels of gas and displayed operational information in real time through the dashboard.
+
+Power Stability: Power domains were isolated (battery-direct motor drivers, and water pump; dedicated buck regulator for Pi/Mega logic) to mitigate the voltage dips induced by the motors . This meant the software stacks could run continuously, and physical LED voltmeters provided immediate status.
+
+Offloaded Perception: Offloading YOLO inference to a child process isolated from crashes on the laptop (primary yolov8s.pt, secondary fire-only detector fire.pt) worked very well. It circumvented Pi processing limits and kept video rates of >=12 FPS, while ensuring neural network exceptions would not freeze the operator dashboard.

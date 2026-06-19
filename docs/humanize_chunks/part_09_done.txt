@@ -1,0 +1,33 @@
+We chose DC motors with encoders due to their ability to provide actuation and feedback of motion. The encoder feedback allows for a precise odometry estimation, which is critical for localisation and navigation. Motor drivers were also reviewed as important interface elements that allow microcontrollers to safely and efficiently control motor speed and direction.
+
+Wheel configurations evaluated included two-wheel differential drive systems with caster wheels and four-wheel drive systems. From the review and initial evaluation a four wheel configuration was found to be beneficial for better torque distribution, stability and ability of carrying additional payloads.
+
+The power system supplies all hardware components with stable and sufficient energy. A literature review was performed on the usual power solutions for mobile robotics.
+
+It was found that lithium polymer (LiPo) batteries were a popular choice due to their high energy density and ability to provide the current needed for motors and onboard electronics. It was also mentioned that voltage regulation is an important consideration as different components often run at different voltage levels . Proper regulation guarantees reliable operation and protects sensitive electronics.
+
+Throughout the review, safety considerations were highlighted. Fuses, protection circuits and proper wiring practices were identified as being essential in preventing damage to components and to ensure safe system operation.
+
+Mechanical design is a key factor in the robustness, stability and practicality of mobile robotic systems. We have surveyed the literature on typical chassis design strategies, material choices, manufacturing methods and structured design workflows in mobile robotics.
+
+The chassis is the main structural element of the robot. It supports all of the hardware and protects it during operation. The chassis are often manufactured from a wide variety of materials such as aluminium, plastics, wood, and additively manufactured parts. Each material has its own trade offs in strength, weight, manufacturability and cost.
+
+The design of mobile robots often uses aluminium sheets because they have a good strength to weight ratio, are durable and resist deformation. Aluminium also works well with many fabrication techniques including cutting, bending and drilling, so it is appropriate for both prototyping and final designs. Considering all the above, the material chosen for the chassis was aluminium sheet, which has to be durable and stable for the project constrains.
+
+The review also analysed widely used manufacturing methods, e.g. CNC cutting, laser cutting, 3D printing, and manual fabrication. For planar metal structures, it was observed that cutting and bending of aluminium sheets is an effective and affordable method that balances accuracy and usability.
+
+Computer aided design ( CAD ) software is essential for design tools to visualise , validate and adjust mechanical structures before fabrication . Robots are built using software packages like AutoCAD, SolidWorks, Fusion 360 and Inventor. Due to availability and the plethora of learning resources, Inventor was an attractive option for 3D modelling and development of design and documentation.
+
+From the literature review it was clear that a structured mechanical design workflow is important for minimising fabrication errors and to facilitate iterative improvement. A typical workflow is to first design a detailed 3D model of the chassis in CAD software to check the dimensions and placement of components, as well as the structural integrity.
+
+Once the 3D design is completed, it is converted to 2D technical drawings for use in fabrication. These drawings are used to guide the cutting and bending work to shape the aluminium sheets. The chassis components are assembled using mechanical fasteners which ensures modularity and ease of maintenance after fabrication.
+
+Finally, in mechanical design iterative refinement is a necessary part. This allows the design limitations to be identified and changed incrementally . Testing the chassis in operational conditions . This iterative approach is useful for the continuous improvement and helps to ensure the satisfaction of the functional and durability requirements of the final mechanical structure.
+
+The literature review offered a comprehensive insight on the technologies, designing methods and system architecture that can be used to develop a search and rescue robotic system. Through the analysis of existing research and practical implementations, we managed to find adequate solutions that fit the goals and constraints of our graduation project.
+
+From a software and communication view, the review pointed to the Robot Operating System (ROS) as a strong and common used framework for robot control, perception and communication between modules. A review of several SLAM algorithms for mapping and localisation was made, GMapping being an initial candidate because of its proven reliability and ROS compatibility, but the final implementation was based on the slam_toolbox due to its better mapping quality and configurability. In the field of perception, the YOLO-based object detection methods have been practical for the real-time visual detection. The deployed system adapts a clean COCO-trained model as its primary detector for general object and human detection, but also has a dedicated secondary model for fire, smoke and flame detection to support emergency-response scenarios.
+
+which led to the adoption of 5 GHz WiFi as the wireless medium, and ZeroMQ/msgpack as the main transport protocol to exchange structured and reliable data between robots and the operations center, and HTTP/JSON for the ESP32 based environmental sensing robot.
+
+Several key design decisions were also informed by the literature review. A multi-robot architecture was identified as being beneficial for task distribution and system flexibility. Studies of the mechanical design supported the use of a four wheel drive configuration for improved stability and torque . It was shown that aluminium chassis designs provided durability and structural integrity . Centralised dashboards for monitoring and supervision to improve situational awareness of operators were also highlighted as important.

@@ -1,0 +1,69 @@
+mapping/slam_only.py (slam_toolbox): async_slam_toolbox_node, mapping node
+
+static_transform_publisher: publishes base_link->laser transform (yaw = 3.14159 to compensate for backwards facing mount)
+
+RViz is used to visualise the generated map, LiDAR scans and robot pose in real-time to verify the mapping accuracy.
+
+The implemented SLAM system can produce accurate indoor maps and track robot position during motion. This implementation is stable and is the basis for further perception and monitoring tasks.
+
+Object and human detection were implemented to provide visual perception and situation awareness. Detection was offloaded to an external laptop because of the Raspberry Pi’s on-board computational limitations.
+
+The Beta robot captures frames from the camera and publishes compressed JPEG bytes
+
+Frames are streamed over the network to the operations centre
+
+Crash isolated YOLO worker process runs inference on the laptop
+
+The following modules are used to combine the visual detection system with the Beta robot and the PySide6 operations console:
+
+This is a ROS 2 node running on the Beta robot. It captures frames from a Logitech C270 USB camera (device index 0, 640x480 resolution at 15 FPS), compresses them to JPEG bytes, and publishes them over ZeroMQ PUB port 5560 in a msgpack envelope.
+
+This node runs under the dedicated systemd service (gp-camera.service) to recover automatically.
+
+On the laptop side, the YoloManager spawns a crash-isolated subprocess that runs _child_main. This worker process: 
+
+Loads up to two YOLO models. The main (defaulting to yolov8s.pt) is a clean COCO net for person/dog/cat detection and a secondary, fire-only net (fire.pt) whose detections are only trusted for the Fire class. Destroyed fire fine-tune.pt’s COCO classes so it is never used as main detector
+
+throws a black-frame forward pass to warm up the model and avoid startup lag
+
+Per-frame detection pipeline consisting of (1) primary COCO model (yolov8s.pt) trained to detect person/dog/cat, (2) secondary fire-only model (fire.pt) trained only on the Fire class, and (3) classical color/shape flame-prop detector (detect_flame_prop) trained to find a printed/animated flame that the trained net cannot see. The three result sets are then combined, with flame-pro hits only added if they do not overlap a real-fire box. gets incoming frames through multiprocessing input queues
+
+It makes inference and returns a placeholder empty JPEG and a list of detections, normalised. It does not draw on the frame. Decoupled rendering: the UI shows the raw camera frame in the UI as it arrives and overlays the bounding boxes as vector graphics, so the latency of the live video is limited by the network and not the inference, and no second JPEG is re-encoded or shipped across the process boundary
+
+Sends detection dicts with bounding box geometry (label, conf, cx, cy, w, h) to output queues
+
+The hazard detection system can detect fire, smoke and flame labels in real time. Offloading YOLO inference to a crash-isolated child process on the laptop prevents PyTorch or CUDA exceptions from crashing or locking up the main PySide6 operator console. Live video frames are processed at the target KPI rate of >= 12 FPS and normalised bounding box geometry allows for distance and bearing estimation for mapping.
+
+Sensors were integrated to enable the robot to sense its environment, estimate motion and monitor safety conditions.
+
+Sensor integration consists of low level and high level processing:
+
+Reads two front-facing HC-SR04 ultrasonic distance sensors on Beta's Mega (LEFT trig=30/echo=31, RIGHT trig=32/echo=33; forward motion hard-stops at 25cm and goto slows from 60cm) and the MQ-5 gas sensor on Gamma's ESP32
+
+Receives sensor data from serial (Pi-to-Mega USB bridges running navigation/robot1_bridge.py and robot2_bridge.py) or HTTP polling (laptop-to-ESP32 Esp32Link)
+
+Then the sensor data is transmitted to:
+
+All sensors are working at the same time and no data is lost. The low-level integration is robot-specific. Alpha uses rf2o scan-matching for localisation; Beta uses a custom complementary filter (not an EKF) that fuses the wheel encoders (408 counts/rev) with the GY-87 IMU gyroscope Z-axis rate. This fusion was moved off the Pi and onto the laptop (dashboard_qt/state/local_odom.py), reconstructing the pose from the raw encoder and gyro values streamed in each telemetry frame. The heading itself is integrated at 50 Hz on the Pi-side bridge (navigation/robot2_bridge.py) for accuracy. The legacy on-robot node navigation/robot2_odom.py is not in the live path anymore. This node auto-calibrates the gyro bias during stationary periods and has a slip-rejection gate that compares the encoder rotations with the gyroscope rates, scaling the odometer distance by a trust factor. Gamma polls the raw ADC values of the MQ-5 gas sensor. The local buzzer alarm is implemented. The alarm is latched for at least 10 seconds and the threshold has hysteresis (alarms at 3000, clears below 2000) to ensure reliable hazard detection.
+
+The communication subsystem is used for reliable data transfer between the robot and an external laptop.
+
+Using the FastDDS transport whitelisting (config/fastdds_udp_only.xml), standard ROS 2 DDS traffic is restricted to the localhost interface of each robot. This local ROS island design prevents congestion of the WiFi link. All inter-device communication is handled by a versioned msgpack-over-ZeroMQ (ZMQ) gateway (gateway_node.py) on the Pi robots and plain HTTP/JSON endpoints on the ESP32 Gamma robot.
+
+The communication gateway maps robot state and commands to some ZMQ channels:
+
+5556 (PUB): telemetry stream (tele.full at 20 Hz, tele.scan at 5 Hz or less)
+
+Port 5557 (PUB): map grid stream (map.grid occupancy updates at <=1Hz, compressed with zlib)
+
+Port 5559 (PUB): health stream (1 Hz, with Pi CPU temp, undervoltage flags, RSSI)
+
+ROUTER (Port 5558): Commands client (cmd.* commands in, ack out, with sequence deduplication)
+
+Port 5560 (PUB): Raw video stream (JPEG bytes, 15 FPS in Beta)
+
+ESP32 Gamma hosts an HTTP server locally with endpoints: /telemetry (JSON payload), /control?dir=D (where D in F,B,L,R,S).
+
+The system remains in stable communication with continuous streaming, meeting ZMQ latency KPIs (P95 ACK <=150 ms) and automatically recovering from temporary WiFi dropouts through connection retries and ESP32 self-healing logic.
+
+The dashboard was created to enable monitoring, supervision and interaction with the system from a single interface.

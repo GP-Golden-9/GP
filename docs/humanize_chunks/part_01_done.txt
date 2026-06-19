@@ -1,0 +1,33 @@
+One example of an autonomous collaborative robotics approach is the Swarm Robot System, used in environments such as search and rescue. This project provides a framework for coordinating multiple autonomous robots to work together on tasks. The system architecture is based on three dedicated cooperative robotic platforms. The Alpha robot uses SLAM with LiDAR, with the slam_toolbox to create accurate 2D maps of the environment. The Beta robot is equipped with the camera for YOLO based fire, smoke and flame detection and water-pump mechanism for fire intervention. Gamma is an ESP32-based gas sensing and environmental monitoring device that uses a MQ-5 sensor. An important element of our approach is the use of a common map representation to which all three robots contribute in a coordinated architecture. The software framework is built around the Robot Operating System 2 (ROS 2). Every Raspberry Pi based robot runs ROS 2 in a local installation. The Pi-based robots communicate with the operations center using ZeroMQ (ZMQ) with envelopes serialised using msgpack over a 5 GHz WiFi network, and the ESP32-based Gamma robot communicates using HTTP/JSON endpoints. As Computer Engineering students with limited exposure to electronics, mechanical design and robotics hardware, this project is also a major learning experience for the team. The team split responsibilities into programming, design, electronics and environment preparation, but kept cross-functional understanding. Now the system is capable of autonomous mapping and object detection in the mapped environment. The test environment is a 4 x 4 metre area consisting of four rooms.
+
+The Swarm Robot System project is an improvement in the design of multi-robot autonomous systems, in particular collaborative robotics for environmental exploration and hazard assessment. The aim of this project is to develop a framework for the coordination of multiple autonomous robots working together to perform tasks that would be difficult or dangerous for a single robotic unit.
+
+The main idea of this project is based on the principle of “Collaborative Intelligence” – distribution of computational and sensory tasks over several specialised robotic units, each of them performing specific functions while acting in coordination. the required functionality. To fulfil these needs, we use three specialised robots that perform all the functions together: environment mapping with SLAM technology, fire detection with deep learning, gas sensing for hazard monitoring, and fire intervention capabilities.
+
+In modern applications such as search and rescue operations, disaster assessment, and structural inspection, the use of human personnel is often hazardous and time-consuming. The Swarm Robot System addresses these challenges by providing an autonomous platform that can systematically explore unknown environments, identify hazards, locate objects of interest, and provide actionable intelligence in real-time.
+
+Our approach is novel in that it designs an integrated system where the capabilities of each robot are purposefully designed and the data from all robots contribute to a common, unified representation of the environment. The common map is the basis for decision making for all robots and allows them to behave in a coordinated manner.
+
+The system is made up of three autonomous mobile robots working together to carry out all required functions:
+
+Alpha Robot (Mapping & Navigation) Equipped with RPLidar A1 LiDAR sensor and advanced on-board processing with Raspberry Pi 4 (8 GB RAM). This robot uses slam_toolbox for continuous SLAM and accurate 2D map generation of the environment, with rf2o laser odometry for motion estimation. Alpha has four JGB37-520 geared motors with Hall encoders, but these are not active at the moment; localisation is based on scan-based odometry (rf2o laser odometry feeding slam_toolbox).
+
+Beta Robot (Intervention and Fire Detection): Raspberry Pi 3B+, Logitech C270 USB camera, GY-87 IMU, 4x 25GA370 encoder motors (408 CPR), HC-SR04 ultrasonic sensors, water pump. This robot carries a fire-intervention water pump and hosts the camera for YOLO based fire detection. It uses custom complementary encoder and gyroscope odometry fusion for navigation and localisation.
+
+Gamma Robot (Environmental Monitoring) : It consists of an ESP32 DevKit microcontroller, MQ-5 gas sensor, HC-SR04 ultrasonic sensor, MPU6050 IMU and buzzer. This robot is designed to detect
+
+monitoring of environmental conditions and toxic gases. Gamma uses HTTP/JSON endpoints and supports over-the-air (OTA) firmware updates. Gamma differs from the Pi-based robots in that it does not run ROS and operates independently with its own embedded HTTP interface.
+
+The robots communicate over a common WiFi network. The Raspberry Pi–based Alpha and Beta robots connect on 5 GHz, run ROS 2 locally, and expose telemetry, map data, video, and commands through a ZeroMQ/msgpack gateway protocol, while the ESP32–based Gamma robot has no 5 GHz radio and joins the network’s 2.4 GHz band. The ESP32-based Gamma uses HTTP/JSON endpoints for telemetry and control. ROS 2 DDS traffic is limited to the local network of each robot on purpose, not broadcast over WiFi.
+
+The main technical features of this project are
+
+Shared Map Architecture: The Alpha robot uses LiDAR based SLAM with slam_toolbox to generate an occupancy grid map. The map is published on the ZMQ gateway and received on the PySide6 operations center that has a shared state store for all the connected robots.
+
+Sensor Fusion. Alpha employs rf2o laser odometry in conjunction with slam_toolbox for localisation. Beta employs a custom complementary filter to fuse wheel encoder data with gyroscope readings, with a slip gate to reject unreliable measurements.
+
+Deep Learning Integration YOLO fire, smoke and flame detection runs in a crash-isolated child process on the operations center laptop with detections projected onto the shared map as incident markers.
+
+Real-time Dashboard: A native PySide6 desktop operations center with dockable panels for map visualisation, fleet status, live video with AI overlays, joystick / WASD teleop, fire and gas alerts, diagnostics and mission planning with A* route planning.
+
+A lot of research was done before starting the implementation of this project to understand the existing work in the field of multi-robot systems, SLAM technology and search and rescue robotics. This was a very important phase of the research since the members of the team are students of Computer Engineering and they had no prior experience in robotics hardware, electronics and mechanical design.

@@ -1,0 +1,37 @@
+Support for Future Multi-Robot Expansion The system shall be designed to allow integration of additional robots in future development phases. The master robot must be capable of sharing perception and sensing information with secondary robots when this functionality is implemented.
+
+These requirements ensure that the system fulfills its intended operational objectives.
+
+The non-functional requirements define the quality attributes and operational constraints of the autonomous robotic system. These requirements describe how the system should perform under real operating conditions and ensure that the system is reliable, usable, and suitable for deployment in safety-critical environments.
+
+Reliability The system shall operate continuously during missions without unexpected shutdowns or failures. Sensor data acquisition, mapping, and communication must remain stable throughout operation to ensure consistent performance in real-world environments.
+
+Real-Time Performance The system shall process sensor data and update visualizations with minimal delay. Map generation, robot position updates, and dashboard information must be refreshed in near real time to allow operators to respond promptly to changing conditions.
+
+Safety The robot shall operate safely in environments where people, equipment, and sensitive infrastructure may be present. Motion control and obstacle avoidance must prevent collisions, and gas sensing data must be clearly presented to support timely safety decisions.
+
+Usability The dashboard interface shall be intuitive and easy to understand for operators with minimal technical background. Information displayed must be clearly organized, readable, and accessible to support effective supervision.
+
+Scalability The system architecture shall support future expansion to multi-robot operation without requiring major redesign. Software components must be modular to allow additional robots to be integrated in subsequent development phases.
+
+Maintainability The system shall be designed to allow easy maintenance and updates. Software modules should be independently modifiable, and hardware components should be accessible for inspection or replacement.
+
+Interoperability The system shall be compatible with standard robotic tools and frameworks. The use of ROS 2 ensures that the system can integrate with additional sensors, software packages, or external systems if required.
+
+Robustness The system shall tolerate minor sensor noise, communication delays, and environmental variations without significant degradation in performance. This requirement is particularly important for operation in dynamic or cluttered environments.
+
+Portability The system software shall be deployable on different computing platforms, including onboard controllers and external laptops. This ensures flexibility in adapting the system to different hardware configurations.
+
+Meeting these requirements ensures long-term system effectiveness and usability.
+
+The system architecture is designed to support reliable operation, modular development, and future scalability. The architecture reflects the current implementation of a single master robot while allowing planned expansion to a multi-robot configuration. It is structured to clearly separate sensing, processing, control, perception, and visualization components, ensuring that each subsystem operates efficiently and can be developed or modified independently.
+
+At the core of the system architecture is a cooperative multi-robot fleet where sensory tasks are distributed among specialized platforms. The Alpha robot is equipped with a LiDAR sensor for mapping and localization. The Beta robot carries the onboard camera and a water-pump intervention mechanism. The Gamma robot hosts the MQ-5 gas sensor for environmental monitoring. Together, these distributed agents collect environmental data to provide complete situational awareness.
+
+The system is built around ROS 2 as the primary middleware, which manages communication between the different software components using a distributed, node-based architecture. Each major system functionality is implemented as an independent ROS 2 node or a group of cooperating nodes, allowing clear separation of responsibilities and modular system development. This design enables efficient and asynchronous exchange of sensor data, robot state information, and control commands while ensuring scalability and fault tolerance. The overall interaction between robots and software components within the swarm framework is illustrated in Figure 3.1.
+
+Mapping and localization are handled by dedicated ROS 2 nodes that process LiDAR data to generate a real-time representation of the environment and estimate the robot’s position within it. The generated map and localization data are shared with other system components to support navigation and visualization. RViz2 is used only as a developer-side debug and visualization aid during bring-up and testing; it is NOT the runtime operator interface. The operational UI for live missions is the native PySide6 desktop operations console, which renders the map, robot pose, video, and detections for the operator, as illustrated in Figure 3.2.
+
+For perception tasks, the system architecture separates computation between the Beta robot and the operations center. The Beta robot transmits the live camera stream to the external laptop, where visual hazard detection is performed using a YOLOv8-based model (such as fire.pt). This architectural decision reduces the computational load on the robot and allows the use of more powerful hardware for deep learning inference. The perception results are then displayed through the PySide6 operations center, enhancing situational awareness without affecting robot mobility performance.
+
+The communication and monitoring layer is implemented through a native PySide6 desktop operations center. This application serves as the main interface between the system and the operator. It receives data from the robots via ZeroMQ/msgpack gateways and HTTP/JSON endpoints, presenting it in a structured and user-friendly format. The dashboard displays the environment map, robot position, camera feed with classification overlays, gas sensor readings, and robot connectivity status.

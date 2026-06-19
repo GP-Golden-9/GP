@@ -35,3 +35,18 @@ Thumbs.db
 
 # personal/unrelated files
 emaar-albina.com.txt
+
+# --- Book build: redundant safety backups & regenerable scratch (not deliverables) ---
+Swarm_Robot_System_Graduation_Book_CORRECTED.prev*.docx
+Swarm_Robot_System_Graduation_Book_CORRECTED.prefmt.docx
+Swarm_Robot_System_Graduation_Book_CORRECTED.pretoc.docx
+book_extracted.txt
+book_ch*.txt
+docx_paras.txt
+docx_tables.txt
+corr_paras.txt
+corr_tables.txt
+verify*.txt
+_ch5_docx.txt
+__pycache__/
+*.pyc

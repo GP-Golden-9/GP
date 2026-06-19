@@ -1,0 +1,33 @@
+The system is managed by a native PySide6 desktop application (dashboard_qt/main.py) which is the main Emergency Operations Center. The dashboard architecture is organised as follows:
+
+The UI is centred around a MapWidget (a shared map with grids, trails and incident markers). All other panels are QDockWidget instances that the operator can float, resize, dock, or hide. They include the FleetPanel (robot cards and status), VideoPanel (live feed with YOLO overlays), OpsPanel (virtual drive joystick, speed presets, relay/pump controls), and BottomPanel (operations log, detections table, diagnostics drawer). The layout state is stored in QSettings between sessions.
+
+RobotState caches are stored in a centralised state store (state/store.py). Background We use QThreads to transport data: RobotLink (subscribes to ZMQ PUB channels), CommandClient (manages ROUTER/DEALER commands and ACKs), and Esp32Link (polls the HTTP endpoints at 3 Hz).
+
+Robot1 (Alpha) defines the global coordinate frame. For non-mapping robots (Beta, Gamma), the operator uses the tool SET POSE to define a rigid 2D transformation (FrameOffset) with translation and rotation. The console transforms all goal clicks to local robot coordinates and back-projects hazards seen by camera to global map markers using geometry defined in dashboard_qt/ui/map/projection.py.
+
+During system integration all previously implemented hardware and software subsystems are integrated and validated as a single, consistent autonomous robotic system. During the first four months of this project, incremental system integration followed the successful implementation of individual hardware components, software modules and communication mechanisms.
+
+This phase was intended to ensure that the sensing, mapping, perception, communication and monitoring modules can operate together simultaneously and reliably under real operating conditions. The integration process was directed towards stability, data consistency and real-time performance and not to add new functionalities.
+
+The system integration was performed in a bottom-up manner, beginning with the low level components and moving towards the higher level subsystems. This approach was less complex and helped to identify integration conflicts early on.
+
+The integration process was decomposed into a sequence of steps:
+
+Each step was independently verified before proceeding to the next phase.
+
+The software stack is managed by systemd services on the Pi robots to provide supervisor resiliency and automatic recovery: gp-robot1.service (Alpha stack), gp-robot2.service (Beta stack), gp-camera.service (isolated video streaming) and gp-discovery.service (localhost FastDDS discovery server). Serial ports are associated with persistent aliases (/dev/rplidar and /dev/mega) via udev rules based on USB vendor and product IDs. To start nodes, a robot-side preflight check script (preflight.sh) gates stack execution by checking serial connectivity and network interfaces.
+
+The laptop runs a global A* path planner (dashboard_qt/ui/map/planner.py) in the central Operations Center. When the operator clicks on a target destination, the planner calculates a collision-free route over the SLAM occupancy grid, which is inflated by the robot's footprint radius in order to maintain safe clearances from walls and doorways. Once a valid route is found the MissionExecutor sequentially sends the robot’s goto controller the coordinates of the waypoint legs and monitors execution, cancelling if progress is blocked.
+
+To ensure fail-safe operation, the system employs a 4-layer command deadman safety chain. PySide6 console streams proportional velocity commands at 10 Hz. The robot-side gateway expects a heartbeat every 0.6 seconds, otherwise it sends zero velocities to the navigation bridge. The bridge sets a 0.8 second watchdog and sends the command to the arduino serial bridge. Finally, the Arduino Mega firmware implements a flat 1.0 second hardware watchdog which will immediately cut off motor PWM and de-energise the water pump relay if USB communication is interrupted. Additionally, an end-to-end latched e-stop command ('E') will immediately shut down the motor.
+
+The Operations Center overlaid the hazards identified in real time onto the common occupancy grid. When YOLO detects a fire or smoke label on Beta’s video feed, YoloManager returns the normalised bounding box geometry. The console then calculates the relative range and bearing to the target based on the horizontal FOV of the camera and a pinhole distance estimation model (distance is inversely proportional to box height). This target coordinate is converted to the global SLAM coordinate frame by applying the aligned pose of the robot and is then used to plot a position-smoothed incident marker on the map. An audible alarm and pulsing alert banner notify the operator.
+
+The testing and evaluation phase of the Swarm Emergency Robotics System was carried out in order to verify the functional and non-functional requirements defined in the system analysis phase. The main goal of this chapter is to evaluate the deployed multi-robot platform in real-world operating conditions and to describe the performance of the most important system modules. The evaluation targets simultaneous localisation and mapping (SLAM), autonomous navigation aid, visual perception, environmental sensing, and reliability of distributed communications.
+
+After the hardware was assembled, the software integrated and the dashboard developed, testing was performed. Thus the reported results are representative of the behaviour of the integrated prototype rather than isolated theoretical expectations. This approach is important because the performance of a robotic system is strongly affected by the interaction of mechanical motion, sensor noise, network delay and processing limitations.
+
+The evaluation methodology was designed in an incremental and bottom-up manner. Initially, individual subsystems such as sensors, mobility controls, communication interfaces, and perception modules were tested independently to establish a baseline of their functionality. The tests in isolation helped to verify that each subsystem produced stable outputs before being connected to the full ROS 2 software stack.
+
+The performance of communication stability, shared spatial awareness and centralised monitoring were checked through integrated system tests after individual tests. This stage tested the robot’s performance with SLAM, odometry, gas sensing, video streaming, object detection, and dashboard visualisation all running at the same time. The bottom-up testing sequence minimised integration risk and aided in identifying the source of errors during the experimental phase.

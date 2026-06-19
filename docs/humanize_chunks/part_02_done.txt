@@ -1,0 +1,67 @@
+In research phase, we studied many academic papers, open-source projects and existing implementations of similar systems. The principal subjects of study were:
+
+Coordination frameworks and communication protocols for multiple robots
+
+This review of previous work provided a foundation for what components would be needed, what challenges to expect, and what methods had worked in similar projects.
+
+The last 20 years have seen a complete transformation in the field of robotics. The earliest robotic systems were mostly fixed machines, dedicated to specific tasks in manufacturing environments. In mobile robotics new challenges were brought about: navigation in unstructured environments, real time decision making, management of sensor uncertainty and power constrained operation.
+
+The next step in robotics is an evolution to multi-robot systems. Instead of solving more and more complex problems with more and more complex individual robots, the research community has realised the benefits of distributed systems: redundancy, parallelisation of tasks, natural scalability and fault tolerance.
+
+One of the most compelling use cases for autonomous robotic systems is search and rescue (SAR) operations. Traditional SAR operations are marked by:
+
+Environmental Hazards: Toxic atmosphere, extreme temperatures, unstable structures
+
+Information Scarcity – No previous maps or knowledge of the environment
+
+Time pressure: every hour of delay lowers the chances of survival
+
+Resource Limitations: shortage of trained personnel and specialised equipment
+
+Robotic systems can help to overcome these problems by rapidly and methodically evaluating the environment, without endangering human personnel.
+
+Table 1.1 gives a summary of the major application domains of swarm robotic systems, together with representative tasks and advantages.
+
+Simultaneous Localisation and Mapping (SLAM) has progressed from a theoretical concept to a practical and reliable technology. Key advances in SLAM include particle filter based methods (FastSLAM), visual SLAM systems (ORB-SLAM) and deep learning based SLAM. Our system is based on slam_toolbox, a modern and actively maintained SLAM framework in the ROS 2 ecosystem, together with rf2o laser odometry for scan-based motion estimation on the mapping robot.
+
+Deep learning has revolutionised how robots perceive their environment in robotic systems. Systems like YOLO for object detection are capable of detecting visual hazards with high accuracy for robots. In our project, YOLO is mainly used for detecting fire, smoke and flames in the mapped environment, and the detection system supports selectable models through the PySide6 operations center.
+
+ROS has become the de facto platform for robotics research and development. ROS offers:
+
+Standardised Middleware Publish/Subscribe message passing Service calls
+
+Sensor Libraries: Dedicated driver support for a wide range of sensors.
+
+Algorithm Libraries Implementations of SLAM, motion planning and control algorithms.
+
+Simulation Environment ROS has integration with simulation tools like Gazebo. (This project does not use Gazebo; the operations center’s own built-in --sim mode, which spawns simulated robots speaking the production protocol, provides hardware-free testing.)
+
+Community & Ecosystem: Well documented and prebuilt components.
+
+The team, being students in Computer Engineering, had a lot to learn in this project. The team had limited exposure to the following prior to this project:
+
+3D Design and CAD software (like Inventor)
+
+This required a lot of time to learn these skills from scratch , which made the project even more complicated and the timeline longer . Although each team member was assigned a particular domain, they all had a general understanding of the other parts of the project so they work well together.
+
+While individual robot capabilities have advanced greatly, there are several difficulties in deploying multiple robots to work together in unknown environments:
+
+Problem: Multiple robots operating in the same physical space. Robots cannot coordinate their movements or target particular locations without a shared representation of that environment (a map). In traditional approaches, each robot needs to make a map of its environment. But when multiple robots are involved, inconsistencies arise when different robots see the same environment.
+
+Impact: Redundant computation, no true coordination, potential conflicts when different robots’ maps disagree about environmental features.
+
+Problem: Most autonomous systems localise with GPS. When it counts, it doesn’t work. GPS doesn’t work indoors, underground, or in urban environments – the very environments where search and rescue operations happen. Robots without GPS need to localise themselves using only their onboard sensors. Traditional odometry accumulates error with distance and becomes unreliable for larger environments
+
+Impact: Robots are not able to navigate reliably, are not able to go back to points of interest, and task completion becomes unreliable
+
+Problem: The modern object detection systems are computationally expensive and not within the capabilities of low-power embedded systems. Executing these algorithms on a Raspberry Pi will be slow. Robot transmits unprocessed video streams to an external processing station. This requires bandwidth.
+
+Effect: Slow response times, inefficient use of bandwidth, potential delays in communication.
+
+Problem: If not properly managed, any component failure (sensor malfunction, processor crash, network connectivity loss) can affect the system. Component problems are expected when robots are working in tough environments.
+
+Effect : Disruption of mission possible , good error control needed . These issues are addressed by the implemented system with recognised command delivery with retry and deduplication logic, multi-layer deadman safety chain from console to gateway to firmware, per-stream freshness monitoring, and an emergency stop propagating across the whole system.
+
+Problem: Coordinating data and communication among several robots. Coordination can be hampered by network latency and lost messages. The trick is to strike a balance between centralised monitoring and distributed operation.
+
+Impact: Problems with coordination, difficulties with communication.

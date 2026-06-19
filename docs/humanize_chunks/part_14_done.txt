@@ -1,0 +1,39 @@
+Being distributed and modular in architecture, the system allows real-time control to stay locally on each robot, while perception and visualisation are performed on the operations center. This separation improves system reliability , simplifies debugging and allows scaling . This architecture allows the Alpha mapping robot to share occupancy grid maps and localisation coordinates with the Beta and Gamma robots through the state store of the operations center without requiring direct robot-to-robot communication.
+
+The overall system architecture allows for a coherent integration of the hardware and software components, enables real-time operation and provides a solid basis for further improvements and real-world deployment in environments such as hospitals, industrial facilities and other safety-critical locations.
+
+The design of the hardware and software for the autonomous robotic system was developed concurrently so that physical components and computational processes are tightly integrated. Design decisions were driven by actual operational needs, reliability of the system and the need to support autonomous navigation, perception and monitoring in real world environments such as hospitals and industrial facilities. The system architecture is modular, easy to integrate and scalable for future development phases.
+
+The hardware design of the system is based on a modular mobile robotic platform. It provides the capability of autonomous navigation, environment mapping, visual perception and environmental monitoring. The overall design emphasises robustness, scalability and ease of maintenance such that in later development phases the system can be extended to a multi-robot setup  The mechanical structure and component arrangement of the platform is shown in Figure 3.3.
+
+The robot platform is a four-wheeled differential-drive type mobile platform. This configuration is chosen to ensure mechanical robustness, controlled manoeuvrability and reliable operation in indoor environments such as hospitals, offices and industrial facilities. Four individual DC motors drive all four wheels for 4WD skid-steer differential steering and accurate motion control so as to achieve sufficient traction and manoeuvrability under dynamic loads. Figure 3.4 shows the final assembled hardware design of the robot platform.
+
+The robot has a physical size of about 40 cm × 30 cm × 25 cm and a weight of about 10 kg per robot. The dimensions were chosen for the robot to be able to navigate through narrow corridors and tight indoor spaces, while carrying all the required sensors and electronic components.
+
+The Alpha Robot (Mapping Explorer) is responsible for autonomous navigation, environment mapping, localisation and coordination with the operations center. It uses rf2o laser odometry for motion estimation and runs slam_toolbox for 2D mapping.
+
+Table 3.1 summarises the main hardware components of the Mapping Explorer Robot, including the processing units, sensors and power system, to highlight their specifications and functional role within the system.
+
+The Beta Robot (Intervention and Detection) is designed for visual perception, detection of hazards and intervention in case of fire. It works in conjunction with the Alpha robot and operations center.
+
+Sensor: Logitech C270 USB camera configured at 640x480 resolution at 15 frames per second to optimise wireless streaming bandwidth
+
+Localisation: No LiDAR is used, but localisation is achieved by a custom complementary filter that fuses data from an MPU6050/GY-87 IMU and wheel encoders with a slip-rejection gate referencing the shared map of the environment.
+
+This design allows the distribution of the hardware complexity while keeping high perception and intervention capabilities.
+
+Gamma Robot (Environmental Sensing) The environment is checked . Dangerous gases are taken into consideration .
+
+Localisation: Works as a static or independent mobile sensor unit, using its local sensor data and sending telemetry over HTTP/JSON
+
+This robot is dedicated to environmental sensing and safety monitoring, and works independently from the ROS-based platforms.
+
+The sensors used in the entire robotic system are selected as per the reliable performance with cost effectiveness. Table 3.2 lists their specifications as follows:
+
+The software design of the autonomous robotic system is based on a layered and modular architecture implemented with ROS 2 as the core middleware. This design methodology allows clear separation of hardware interfacing, control logic, navigation, perception and user interaction. The software architecture is designed to support real-time operation, system scalability and ease of maintenance while accommodating the current single-robot implementation and planned multi-robot expansion. Figure 3.5 shows the overall software stack and the interaction between ROS 2 nodes.
+
+The software system is organised in five functional layers; each layer is responsible for a specific part of the system functionality. This layered architecture increases the clarity of the system and allows to develop, test and modify individual components independently.
+
+This layer communicates directly with the physical hardware of the robot, such as motors and sensors. It conceals hardware specific details and provides standardised interfaces to higher level software components. This layer abstracts the hardware and isolates hardware dependencies so that hardware changes do not significantly affect the rest of the software system.
+
+The control unit used is Arduino-based and is used for low-level control and time-critical tasks. This layer takes care of real-time motor control, reading wheel encoders, IMU data and basic odometry computation. This offloads computational load from the main processing platform, ensuring deterministic timing and responsive motor behaviour.

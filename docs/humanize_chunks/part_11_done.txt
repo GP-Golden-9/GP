@@ -1,0 +1,39 @@
+The software and robotics subteam (2 members) works on the implementation of the core system functionality using ROS 2. They are responsible for robot control, sensor data integration, mapping and localisation and system level testing. This subteam makes sure that the robot works on its own and that all software components talk to each other accordingly.
+
+The perception and dashboard subteam is responsible for visual perception and user interaction and has 1 member. This will be done by integrating the Logitech C270 USB camera, object detection using YOLOv8 (yolov8s.pt primary + fire.pt secondary) on the external laptop and developing the native PySide6 desktop operations console for real-time monitoring and visualisation.
+
+Sub-teams have divided responsibilities, but there are regular coordination meetings to keep hardware and software development in alignment. This collaborative structure facilitates knowledge sharing, enables early identification of cross-domain dependencies, and supports smooth progress of system integration. This allows hardware and software to be developed simultaneously, reducing delays in sequential development and improving overall project efficiency.
+
+Coordination mechanisms are important to manage the complexity of the project and to ensure smooth collaboration between team members. At the end of each development sprint, regular progress reviews are held to review the completed tasks, ensure the system is working as anticipated, and identify any technical issues faced during implementation. These reviews help to gauge the achievement of the milestones and guide the planning for the next sprints.
+
+System architecture decisions, hardware configurations, software updates and testing results are documented continuously. This documentation enables knowledge sharing among team members and ensures continuity during development.
+
+We use GitHub as the main version control and collaboration tool for the software parts of the project. All source code, configuration files and documentation are available from one central GitHub repository, enabling controlled code updates, change tracking and rollback if required. This ensures that contributions are uniform and encourages collaborative development.
+
+Establishes clear, direct communication channels between team members that facilitate quick issue resolution and effective decision making. The combined coordination mechanisms are designed to facilitate effective collaboration, to maintain alignment to project goals and to the planned development schedule.
+
+The project is planned for a total of 8 months, in a way that permits a steady rhythm of work and a balanced division of the work load. At the time of writing this report, the project has been in development for roughly four months.
+
+The timeline is structured as follows:
+
+Month 1: Design and build the 4 wheel mobile robot (including chassis assembly and motor integration)
+
+Month 2: ROS 2 environment installation and configuration, basic robot motion and sensor communication implementation.
+
+Month 3: LiDAR sensor integration and mapping and visualisation implementation with RViz2.
+
+Month 4: Development of PySide6 desktop dashboard, object detection based on YOLOv8 (primary: yolov8s.pt, secondary: fire.pt), gas sensing with MQ-5 sensor and basic setup of virtual simulation environment.
+
+Months 5–8 (Planned): Development of second robot, system coordination, advanced testing, performance optimisation, documentation completion.
+
+Gantt charts are visual representations of scheduling, dependencies and progress of tasks. Keeping this chart helps to track milestones, overlapping tasks, and make sure to follow the planned timeline.
+
+Note on Evolution of Timeline It is important to clarify that the actual implementation and engineering workflows of the project evolved flexibly from this initial plan. The design phase, which had envisioned a sequential multi-robot deployment in Months 5–8, was concurrent with the development of the software architecture, the ZeroMQ-based messaging gateway, the custom sensor fusion nodes, and the PySide6 desktop console for the support of a three-robot fleet configuration, starting from an earlier point in the lifecycle.
+
+From a business and organisational perspective, many industries including emergency response, industrial operations, and infrastructure management organisations face considerable challenges when operating in hazardous or unknown environments. These organisations require reliable, fast and accurate situational awareness to support decision making, while minimising operational risk and cost. However, current inspection and monitoring procedures are largely human-dependent, which jeopardises personnel safety, increases operational costs, and limits the frequency and scope of inspections.
+
+Systems that can autonomously collect environmental data, navigate through complex spaces without pre-existing maps, and provide real-time feedback to decision makers are needed by disaster response and industrial safety organisations. Manual inspection methods are often inefficient requiring extensive preparation, protective equipment and trained personnel. Human-based inspections are also susceptible to fatigue, limited visibility and inconsistent data collection, all of which can negatively impact operational effectiveness and reliability.
+
+From a business point of view, the main need is for a system which is autonomous, scalable, and cost effective, capable of operating non-stop in hazardous environments and producing accurate and timely information. Such a system must reduce reliance on human intervention, increase operational efficiency and enable faster response times in critical situations. Also, organisations require systems that are scalable and extensible so that future upgrades can be made without a complete redesign.
+
+However, existing solutions have many limitations. Many current robotic systems are expensive, require complex infrastructure, or are designed for very specific use cases and thus are not suitable for small- to medium-scale organisations. Also, systems without real-time mapping, autonomous navigation or environmental sensing are not enough for dynamic and unstructured environments.

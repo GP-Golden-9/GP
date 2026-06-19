@@ -1,0 +1,35 @@
+To address these limitations, the proposed system introduces an autonomous mobile robot capable of simultaneous localization and mapping, autonomous navigation, object detection, and hazardous gas sensing. By integrating these functionalities into a single platform, the system provides comprehensive environmental awareness while maintaining operational simplicity. The use of modular hardware and open-source software further enhances affordability and flexibility.
+
+The system is designed to meet specific operational needs, including real-time environment mapping, autonomous movement without predefined paths, visual object recognition, and gas detection for safety monitoring. Additionally, the system supports remote monitoring through a dashboard interface, enabling decision-makers to assess conditions without direct exposure. The planned expansion to a multi-robot configuration further addresses scalability requirements by enabling wider area coverage and improved system robustness.
+
+The requirements of the autonomous robotic system were defined based on real operational needs observed in environments where human access is limited, risky, or inefficient. Throughout the development process, the system was treated as a practical solution intended to support organizations that require continuous monitoring, inspection, and environmental awareness, rather than as a purely academic prototype.
+
+The implemented requirements reflect the need for autonomous navigation, real-time mapping, environmental sensing, and remote monitoring. These capabilities were selected to address real-life challenges faced by facilities such as hospitals, industrial firms, warehouses, and other large indoor environments, where safety, efficiency, and reliability are critical. The system design prioritizes features that reduce human exposure to risk, minimize manual intervention, and provide accurate information to decision-makers.
+
+The primary users of the system are operators and supervisors working in facilities such as hospitals, industrial firms, and other large operational environments. These users rely on the robot to navigate autonomously, collect environmental data, and provide real-time feedback through a monitoring dashboard. In a hospital environment, the system can assist in monitoring restricted areas, detecting hazards, or inspecting corridors without disrupting daily operations. In industrial or commercial facilities, the robot can support routine inspections, safety checks, and environmental monitoring tasks.
+
+Another group of users includes technical staff and system operators, who are responsible for deploying the robot, initiating missions, and monitoring system performance. These users interact with the system primarily through the dashboard, which displays the generated map, robot position, camera feed, object detection results, and connectivity status. The system is designed to minimize the need for direct human control, allowing operators to focus on supervision rather than manual navigation.
+
+Stakeholders also include organizations and facility management teams that benefit from improved safety and operational efficiency. These stakeholders are interested in reducing inspection costs, minimizing downtime, and enhancing safety compliance through automated monitoring solutions. The system addresses these needs by providing a scalable and adaptable platform that can be integrated into existing workflows.
+
+Academic supervisors and the Faculty of Engineering at May University in Cairo remain important stakeholders in the current phase, as they oversee development quality and evaluation. However, the project is explicitly designed to extend beyond academic use, offering a foundation for real-world deployment and future enhancements.
+
+The functional requirements of the system describe the specific operations and capabilities that the autonomous robotic system is required to perform based on its current implementation. These requirements are derived directly from the functionalities that have been developed and tested using the master robot and its associated monitoring dashboard .
+
+Autonomous Navigation The system shall enable the robot to move autonomously within indoor environments without requiring continuous manual control. The robot must be able to traverse corridors and open spaces while responding to environmental constraints detected through onboard sensors.
+
+Environment Mapping The system shall generate a two-dimensional map of the surrounding environment using LiDAR data. This map must be continuously updated as the robot explores new areas, allowing operators to visualize the environment in real time.
+
+Localization The system shall estimate the robot’s position and orientation within the generated map during operation. Accurate localization is required to track robot movement and support safe navigation in structured environments such as hospitals or industrial facilities.
+
+Obstacle Detection and Avoidance The robot shall detect obstacles present in its path using sensor data and adjust its motion to avoid collisions. This functionality is essential for safe operation in environments where people, equipment, or furniture may be present.
+
+Visual Data Acquisition The system shall capture live video streams from the onboard Logitech C270 USB camera and transmit them to an external computing device for further processing and visualization.
+
+Object Detection and Classification The system shall perform real-time visual hazard detection using the YOLOv8-based fire, smoke, and flame model (defaulting to fire.pt) executed on an external laptop, with support for selectable models through the monitoring interface.
+
+Gas Detection The system shall monitor environmental conditions using the MQ-5 gas sensor on the Gamma platform and provide real-time gas level readings and threshold alerts. This functionality supports early detection of hazardous conditions in enclosed or sensitive environments.
+
+System Monitoring and Visualization The system shall provide a graphical dashboard that displays key operational data, including the generated map, robot position, camera feed with classification results, and connectivity status. This enables remote supervision and informed decision-making.
+
+Data Communication The system shall support continuous data exchange between the robot platforms and the external monitoring device. The Pi-based robots run ROS 2 locally for low-latency control and use a custom ZeroMQ/msgpack gateway over WiFi for telemetry and command distribution, while the ESP32-based platform uses HTTP/JSON endpoints. Standard ROS 2 DDS traffic is restricted to each robot's local network to prevent wireless link congestion.

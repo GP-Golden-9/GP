@@ -1,0 +1,33 @@
+The software logic was verified by an automated pytest suite comprising 106 test functions in 13 test modules, together with integrated physical testing. The suite of logic verification tests was run on both Windows and the Pi platforms. These included serialisation envelopes for sequence numbering and integrity (test_envelope), serial-bridge packet parsing and command framing (test_mega_parser, test_mega_commands, test_commands), differential-drive odometry math (test_diff_drive), the goto controller and Beta's reactive local navigation (test_goto_controller, test_local_nav), A* route-planner optimisation (test_planner), rigid 2D map coordinate  This ensured pure-logic correctness before the hardware integration.
+
+All experimental verification was performed in a specially designed physical testbed of size 4 x 4 meters. The indoor structured space was divided into 4 rooms to simulate a constrained and partly unstructured search and rescue (SAR) scenario. The environment was chosen because it provided repeatable testing, but still presented significant challenges that exist in real indoor emergency environments.
+
+The test environment included physical obstacles simulating debris, various lighting conditions, narrow passages and designated hazard zones in order to trigger environmental sensors. These conditions enabled testing of the robot against practical limitations, such as confined manoeuvring space, transient visual degradation, sensor response delay, and WiFi attenuation behind obstacles.
+
+To test the error handling and supervision of the dashboard in the event of critical failures, a zero-hardware simulation environment was implemented (using the --sim startup option). The simulation simulates the kinematics of the 3 robots, virtual arena, raycast LiDAR and streams test video with real fire imagery. We ran fault injection scenarios including artificial video packet drops, serial bridge disconnects and gateway process crashes to verify that the operations center handles link state changes gracefully, displays diagnostic warnings and isolates YOLO exceptions.
+
+The testing infrastructure consisted of three special platforms: Alpha, Beta and Gamma. Alpha was equipped with a Raspberry Pi 4 (8 GB RAM) and RPLidar A1M8. Alpha was running ROS 2 Humble. Alpha uses an Arduino Mega 2560 for low-level motor control, and carries Hall encoders on its 4 JGB37-520 motors that are present but not currently used, and it derives its motion estimate from rf2o laser odometry (scan-matching on the RPLidar stream), rather than wheel dead reckoning. Beta was built with a Raspberry Pi 3B+, an Arduino Mega 2560, a USB Logitech C270 camera, a GY-87 IMU, 25GA370 DC motors with 408 CPR encoders, and a water pump. Gamma was an ESP32 based platform with MQ-5 gas sensor, single HC-SR04 ultrasonic sensor and a buzzer.
+
+The central Emergency Operations Center consisted of an external laptop running the native PySide6 desktop dashboard and the YOLO based visual hazard detection process. The robots and the operations laptop talked on a local 5 GHz Wi-Fi network. Device-to-device communication was isolated using local ROS 2 localhost DDS transports, with a versioned msgpack-over-ZeroMQ gateway running on the Pi-based robots and HTTP/JSON endpoints on the ESP32 Gamma platform.
+
+Before the experimental runs, some test cases and quantitative metrics to objectively evaluate the system were defined. Each test case would be linked to one major system function . The measured results could be compared to the expected behaviour of the implemented architecture . The selected metrics were selected to capture both engineering performance as well as operational utility in search and rescue scenarios.
+
+For the SLAM test case, the robot had to move in the 4 x 4 metre space with an average velocity of about 0.25 m/s and generate a two-dimensional occupancy grid map. The generated map was compared with the physical dimensions of the test environment to evaluate the dimensional accuracy and consistency of the mapped boundaries.
+
+The main SLAM metric was the dimensional error between the generated occupancy grid and the physical environment as measured. Other observations were map update rate, total map generation time, and visible distortions during rotation or sharp manoeuvring.  These metrics indicate the accuracy of the generated map in terms of providing navigation and operator awareness.
+
+The visual hazard detection pipeline executed YOLOv8 on the operator’s laptop. The main model is yolov8s.pt (clean COCO classes -- person/dog/cat) and fire.pt is a secondary network (fire only). Its only trusted output is its Fire class. fire.pt is never used as the primary model because its fire fine tune degraded its COCO classes (it scored 0% on a person that yolov8s.pt detected at 92%). The console allows inference only on classes person, dog, cat and fire. The evaluation was done on the full pipeline: image capture on Beta, compression, ZMQ transmission, multiprocessing inference, mapping projection and visualisation, as the inference process was offloaded to the external laptop.
+
+Frames Per Second (FPS) : Used to measure the real-time performance of the detection pipeline in static and moving scenarios.
+
+Detection Accuracy It is used to calculate the percentage of the correctly detected objects and human figures in the test cases.
+
+Mean Average Precision (mAP): Measures the quality of the predicted bounding boxes with an Intersection over Union (IoU) threshold of 0.50.
+
+The confidence threshold was tuned to the light conditions in order to keep a reasonable trade-off between missed detections and false positives. This was required since emergency environments may contain smoke, shadows, partial occlusion and rapidly changing illumination.
+
+Localisation was verified by commanding the Beta robot to follow linear and square trajectories and to return to its computed origin. The positional drift was measured by comparing the custom complementary odometry (combining the 25GA370 encoders and the GY-87 IMU gyroscope Z-axis rate) with the physical measurements.
+
+The localisation drift was quantified using the Root Mean Square Error (RMSE) of the positional translation, which is defined as:
+
+RMSE = sqrt(1/N Sum_{i=1}^N ( (x_i - hat{x}_i)^2 + (y_i - hat{y}_i)^2 ) )

@@ -1,0 +1,33 @@
+DC motors equipped with encoders were identified as a practical choice due to their ability to provide both actuation and motion feedback. Encoder feedback enables accurate odometry estimation, which is essential for localization and navigation. Motor drivers were also reviewed as necessary interface components that allow microcontrollers to control motor speed and direction safely and efficiently.
+
+Different wheel configurations were evaluated, including two-wheel differential drive systems with caster wheels and four-wheel drive systems. Based on the review and initial evaluation, a four-wheel configuration was identified as advantageous due to its improved torque distribution, stability, and suitability for carrying additional payloads.
+
+The power system is responsible for supplying stable and sufficient energy to all hardware components. The literature review considered common power solutions used in mobile robotics.
+
+Lithium polymer (LiPo) batteries were identified as a widely used option due to their high energy density and ability to deliver the current required by motors and onboard electronics. Voltage regulation was also highlighted as an important consideration, as different components often operate at different voltage levels. Proper regulation ensures reliable operation and protects sensitive electronics.
+
+Safety considerations were emphasized throughout the review. The inclusion of fuses, protection circuits, and proper wiring practices was identified as essential for preventing damage to components and ensuring safe system operation.
+
+Mechanical design plays a critical role in ensuring the robustness, stability, and practicality of mobile robotic systems. The literature review focused on common chassis design strategies, material selection, manufacturing methods, and structured design workflows used in mobile robotics.
+
+The chassis serves as the primary structural component of the robot, supporting all hardware elements and protecting them during operation. Various material options are commonly used in robotic chassis design, including aluminum, plastics, wood, and additively manufactured components. Each material presents trade-offs in terms of strength, weight, manufacturability, and cost.
+
+Aluminum sheets are frequently adopted in mobile robot designs due to their favorable strength-to-weight ratio, durability, and resistance to deformation. In addition, aluminum is compatible with several fabrication techniques such as cutting, bending, and drilling, making it suitable for both prototyping and final designs. Based on these considerations, aluminum sheet was identified as an appropriate choice for achieving a durable and stable chassis within the constraints of the project.
+
+The review also examined commonly used manufacturing methods, including CNC cutting, laser cutting, 3D printing, and manual fabrication. For planar metal structures, cutting and bending aluminum sheets was found to be an efficient and accessible approach that balances precision and practicality.
+
+In terms of design tools, computer-aided design (CAD) software is essential for visualizing, validating, and refining mechanical structures prior to fabrication. Software packages such as AutoCAD, SolidWorks, Fusion 360, and Inventor are widely used in robotic design. Inventor was selected for 3D modeling due to its availability and the abundance of learning resources, enabling effective design development and documentation.
+
+The literature review emphasized the importance of adopting a structured mechanical design workflow to reduce fabrication errors and support iterative improvement. A typical workflow begins with creating a detailed three-dimensional chassis model using CAD software, allowing designers to verify dimensions, component placement, and structural integrity.
+
+Once the 3D design is finalized, it is converted into two-dimensional technical drawings suitable for fabrication. These drawings guide the cutting and bending processes used to shape the aluminum sheets. Following fabrication, the chassis components are assembled using mechanical fasteners, ensuring modularity and ease of maintenance.
+
+Finally, iterative refinement is an essential aspect of mechanical design. Testing the assembled chassis under operational conditions allows design limitations to be identified and addressed through incremental modifications. This iterative approach supports continuous improvement and helps ensure that the final mechanical structure meets functional and durability requirements.
+
+This literature review provided a comprehensive understanding of the technologies, design approaches, and system architectures relevant to the development of a search and rescue robotic system. Through the analysis of existing research and practical implementations, we were able to identify suitable solutions that align with the objectives and constraints of our graduation project.
+
+From a software and communication perspective, the review highlighted the Robot Operating System (ROS) as a robust and widely adopted framework for robot control, perception, and inter-module communication. For mapping and localization, several SLAM algorithms were reviewed, with GMapping serving as an initial candidate due to its proven reliability and ROS compatibility; the final implementation adopted slam_toolbox for its superior mapping quality and configurability. In the area of perception, YOLO-based object detection methods emerged as a practical choice for real-time visual detection. The deployed system uses a clean COCO-trained model as its primary detector for general object and human detection, with a dedicated secondary model available for fire, smoke, and flame detection to support emergency-response scenarios.
+
+leading to the adoption of 5 GHz WiFi as the wireless medium, with ZeroMQ/msgpack serving as the primary transport protocol for structured, reliable data exchange between robots and the operations center, and HTTP/JSON for the ESP32-based environmental sensing robot.
+
+The literature review also informed several key design decisions. A multi-robot architecture was identified as advantageous for distributing tasks and improving system flexibility. Mechanical design studies supported the use of a four-wheel drive configuration to enhance stability and torque, while aluminum chassis designs were shown to provide durability and structural integrity. Additionally, the importance of centralized dashboards for monitoring and supervision was emphasized as a means of improving operator situational awareness.

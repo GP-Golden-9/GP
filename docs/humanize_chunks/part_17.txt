@@ -1,0 +1,69 @@
+One of the primary risks is instability of the wireless network, which may affect communication between the robots and the operations center. Wireless links can suffer from packet drops, signal attenuation behind walls, or DDS discovery failures. This risk is mitigated by using a ZMQ gateway instead of DDS over WiFi, implementing an acknowledged command delivery protocol with retries and deduplication, and establishing a multi-layer deadman safety chain from the operations center to the gateway and low-level firmware. Motor power is cut by a layered deadman chain rather than a single timeout: the gateway stops the drive after 0.6 s of silence, the onboard bridge after 0.8 s, and the firmware watchdog after 1.0 s - whichever fires first. This redundancy prevents runaway conditions even if one layer hangs. Additional risks such as sensor calibration drift, low voltage resets, and model false positives are mitigated via IMU complementary filtering, dedicated buck converters, and adjustable YOLO confidence thresholds.
+
+Hardware-related risks include motor failure, sensor degradation, or hardware incompatibilities. These risks can affect robot mobility and perception accuracy. Mitigation measures include early prototyping, extensive testing during development sprints, verification of component compatibility, and maintaining spare components for quick replacement.
+
+Another technical risk is SLAM performance degradation in cluttered or dynamic environments. Inaccurate mapping or localization could impact navigation reliability. This risk is mitigated through testing in diverse indoor environments and incremental tuning of SLAM parameters.
+
+Sensor-related risks, such as encoder slip on slippery surfaces or noise in gas sensor readings, may lead to inaccurate measurements. These risks are reduced through calibration procedures, sensor fusion techniques, and continuous monitoring of sensor data through the dashboard.
+
+On the perception side, object detection misidentification represents a potential risk, particularly in complex visual scenes. This risk is mitigated by applying confidence thresholds to detection results and allowing human supervision through the dashboard.
+
+Project-level risks include software integration issues, team member availability, and deadline pressure. These are mitigated through frequent integration testing, shared documentation, cross-training among team members, and clear milestone planning.
+
+The system is developed based on several assumptions that define its intended operating conditions and project constraints.
+
+A wireless WiFi network with sufficient bandwidth (greater than 1 Mbps) is available during operation
+
+The operating environment is structured, with clear walls and manageable levels of clutter
+
+The LiDAR sensor maintains an unobstructed line of sight with surrounding surfaces
+
+The camera has sufficient visual features and lighting conditions for reliable object detection
+
+No GPS signal is required, as the system operates entirely indoors
+
+A trained operator is available to deploy, monitor, and supervise the system
+
+The operating environment is safe and free from immediate human hazards
+
+The correct operation of the system depends on several external technologies and resources. These dependencies must be maintained to ensure system stability and consistent performance.
+
+Key software dependencies include the ROS middleware, sensor drivers for the LiDAR, camera, IMU, encoders, and gas sensors, as well as deep learning frameworks required to run the YOLOv8 model. The system also depends on a suitable external computing device capable of performing real-time object detection.
+
+The monitoring dashboard depends on a stable network connection and the availability of the chosen desktop (PySide6/Qt) framework. Data logging and system replay depend on ROS-compatible logging mechanisms.
+
+Managing these dependencies through careful configuration, documentation, and testing is essential for maintaining system reliability and supporting future system expansion.
+
+The hardware implementation followed a systematic and phased integration approach to ensure reliability, safety, and ease of debugging. All assembly and integration activities were completed within the first four months of the project and focused on delivering three specialized robotic platforms: Alpha (the mapping explorer), Beta (the intervener), and Gamma (the gas inspector).
+
+The process combined mechanical design, electronics integration, and incremental testing, allowing early identification of issues and reducing the risk of late-stage failures.
+
+Phase 1: Individual Component Verification (Weeks 1–2)
+
+The first phase focused on validating each hardware component independently before any physical assembly. This step was essential to avoid integrating faulty components into the system.
+
+Each sensor (Alpha's RPLidar A1, Beta's camera and encoders, the GY-87/MPU6050 IMUs, and Gamma's MQ-5 gas sensor) was tested individually in isolation
+
+Custom Arduino firmware was developed and used to verify correct sensor readings
+
+Sensor outputs were compared against expected values and known references
+
+Calibration procedures were applied where required (e.g., encoder counts, IMU offsets)
+
+This phase ensured that all components met functional requirements before mechanical and electrical integration.
+
+Phase 2: Base Platform Design and Assembly (Weeks 3–4)
+
+The second phase focused on the mechanical design and construction of the robot chassis.
+
+The chassis was first modeled using Autodesk Inventor, which was used to:
+
+Design mounting points for motors, wheels, electronics, and sensors
+
+After finalizing the 3D model, AutoCAD was used to produce precise 2D technical drawings. These drawings were used for fabrication and assembly, ensuring accurate hole placement, alignment, and structural consistency.
+
+The robot chassis was assembled according to the CAD designs
+
+For the Alpha and Beta platforms, four DC motors were mounted in a four-wheel skid-steer differential drive configuration. Alpha was equipped with four JGB37-520 geared motors (12 Vdc, 107 rpm, 4.8 kg.cm) whose integrated Hall encoders are present but currently inactive (Alpha localizes via rf2o laser scan-matching), and Beta was equipped with four 25GA370 motors featuring integrated 408 CPR quadrature encoders. Gamma was designed as a lightweight ESP32-based platform with a four-motor chassis.
+
+The four-wheel configuration ensures high traction and stability on flat indoor surfaces, eliminating the need for a passive caster wheel and preventing structural slip during rotational pivots.
