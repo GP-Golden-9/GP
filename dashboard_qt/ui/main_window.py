@@ -323,6 +323,7 @@ class MainWindow(QMainWindow):
         self._dock_autonomy.raise_()
         self._mission_phase = 'idle'
         self.mission_panel.actionClicked.connect(self._mission_action)
+        self.mission_panel.stepDoneClicked.connect(self._mission_step_done)
         self.mission_panel.abortClicked.connect(self._mission_abort)
 
         self.resizeDocks([self._dock_fleet, self._dock_video], [300, 330],
@@ -961,6 +962,40 @@ class MainWindow(QMainWindow):
                 self.mission_panel.log_line(f'robot2 fire run stopped ({label}).')
                 self._mstep('ask_fire', 'Fire run stopped. Confirm to retry, or ABORT.',
                             'CONFIRM - send Beta to fire', kind='warn')
+
+    def _mission_step_done(self) -> None:
+        """Operator override: force-complete the CURRENT step and advance —
+        so the demo proceeds even if Beta didn't perfectly finish (drift/stuck),
+        or to skip a step. Stops the robot first if it's driving."""
+        p = self._mission_phase
+        if p in ('scanning', 'fire', 'scan_review'):
+            self._fire_stop()                    # cancel driving/pump cleanly
+        self._placing_fire = False               # drop any pending fire placement
+        if p in ('idle', 'done'):
+            self.mission_panel.log_line('no active step to complete.')
+            return
+        if p == 'mapping':
+            if self._grid is None:
+                self.mission_panel.log_line('no map yet - let Alpha map first.')
+                return
+            self.mission_panel.log_line('operator: mapping done.')
+            self._mstep('ask_scan',
+                        'robot1 wants to send robot2 to scan the area for objects. Confirm?',
+                        'CONFIRM - send Beta to scan')
+        elif p == 'ask_scan':
+            self.mission_panel.log_line('operator: skipped the scan step.')
+            self._mission_enter_ask_fire()
+        elif p in ('scan_review', 'scanning'):
+            self.mission_panel.log_line('operator: marked the SCAN done -> next.')
+            self._mission_enter_ask_fire()
+        elif p == 'ask_fire':
+            self.mission_panel.log_line('operator: skipped the fire step.')
+            self._mstep('done', 'MISSION COMPLETE (operator skipped the fire).',
+                        'RESTART MISSION', kind='good')
+        elif p == 'fire':
+            self.mission_panel.log_line('operator: marked the FIRE done -> complete.')
+            self._mstep('done', 'MISSION COMPLETE - operator marked the fire done.',
+                        'RESTART MISSION', kind='good')
 
     def _mission_abort(self) -> None:
         self._fire_stop()

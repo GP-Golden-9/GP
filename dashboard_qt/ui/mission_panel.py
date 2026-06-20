@@ -29,6 +29,7 @@ _KIND = {'accent': theme.ACCENT, 'good': theme.GOOD,
 
 class MissionPanel(QWidget):
     actionClicked = Signal()      # the single context button (advances the flow)
+    stepDoneClicked = Signal()    # operator force-completes the current step
     abortClicked = Signal()
 
     def __init__(self, parent=None):
@@ -74,6 +75,17 @@ class MissionPanel(QWidget):
         ctl.addWidget(self.btn_action, 2)
         ctl.addWidget(self.btn_abort, 1)
         root.addLayout(ctl)
+
+        # Operator override: mark the current step done and move on. Lets the
+        # demo proceed when Beta doesn't perfectly finish (drift / stuck) — or
+        # to skip a step entirely.
+        self.btn_done = QPushButton('STEP DONE  ->  NEXT')
+        self.btn_done.setFocusPolicy(Qt.NoFocus)
+        self.btn_done.setMinimumHeight(38)
+        self.btn_done.setToolTip('Mark the current step complete and advance '
+                                 '(stops the robot if it is driving)')
+        self.btn_done.clicked.connect(self.stepDoneClicked)
+        root.addWidget(self.btn_done)
 
         cap = QLabel('MASTER -> SLAVE LOG')
         cap.setStyleSheet(f'color:{theme.MUTED}; font-size:9px; '
