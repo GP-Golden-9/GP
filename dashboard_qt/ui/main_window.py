@@ -238,6 +238,10 @@ class MainWindow(QMainWindow):
         self._assist_timer.setSingleShot(True)
         self._assist_timer.setInterval(1200)
         self._assist_timer.timeout.connect(self._assist_resume)
+        # MANUAL HOLD: full operator takeover mid-mission (MANUAL button) — the
+        # mission stays paused and the robot drives freely until AUTONOMOUS
+        # resumes it (no auto-resume, unlike a quick assist nudge).
+        self._manual_hold = False
         self.map.markerPlaced.connect(
             lambda x, y: self.map.add_marker('PIN', x, y, robot='operator',
                                              t_wall=time.strftime('%H:%M:%S')))
@@ -473,6 +477,11 @@ class MainWindow(QMainWindow):
         # resumes from the new pose once the operator lets go. Outside a
         # sequence, manual drive still takes over (cancels a plain goal run).
         if self.mission.active and self._seq:
+            if self._manual_hold:                 # full takeover (MANUAL button)
+                if not self.mission.paused:
+                    self.mission.pause()
+                self._client().drive(vx, wz)      # drive freely, no auto-resume
+                return
             if vx or wz:                          # real input → pause + assist
                 if not self.mission.paused:
                     self.mission.pause()
@@ -517,6 +526,34 @@ class MainWindow(QMainWindow):
         self._log('ALL STOP — every robot e-stopped (release per robot)')
 
     def _mode_changed(self, mode: str) -> None:
+        # During a running SCAN/FIRE/MISSION leg, MANUAL = take over (pause &
+        # HOLD the run, drive freely), AUTONOMOUS = resume it from the current
+        # pose. This lets the operator reposition Beta mid-mission (e.g. after a
+        # drift) WITHOUT cancelling the whole sequence.
+        if self.mission.active and self._seq:
+            if mode == 'manual':
+                self._manual_hold = True
+                self.mission.pause()
+                self._seq_disarm()              # stop autonomy so it won't wander
+                self._stop()
+                self.fire_panel.set_status('MANUAL HOLD - drive freely; '
+                                           'AUTONOMOUS resumes', 'warn')
+                self.mission_panel.log_line('operator took MANUAL control '
+                                            '(mission paused).')
+                self._log(f'{self.active_id} MANUAL HOLD — mission paused')
+            else:                                # back to autonomous → resume
+                self._manual_hold = False
+                self._stop()
+                self._seq_arm()                 # re-arm autonomy
+                self.mission.resume()
+                if self._seq_phase_label:
+                    self.fire_panel.set_status(self._seq_phase_label, 'accent')
+                self.mission_panel.log_line('operator resumed AUTONOMOUS '
+                                            '(mission continues).')
+                self._log(f'{self.active_id} → AUTONOMOUS — mission resumed')
+            return
+        # No mission running: plain manual/auto drive-mode toggle.
+        self._manual_hold = False
         self.mission.cancel('cancelled by mode change')
         enable = (mode == 'auto')
         self._client().send(cmds.CMD_EXPLORE, {'enable': enable})
@@ -704,6 +741,7 @@ class MainWindow(QMainWindow):
     def _seq_finish(self, label: str, kind: str = 'good') -> None:
         self._seq = None
         self._seq_phase_label = ''
+        self._manual_hold = False
         self._seq_disarm()
         self.map.clear_path()
         self.map.clear_reference_path()
@@ -1005,6 +1043,7 @@ class MainWindow(QMainWindow):
 
     def _mission_reset(self) -> None:
         self._fire_xy = None
+        self._manual_hold = False
         self.map.clear_reference_path()
         self._mstep('idle', 'Press START MISSION to run the Alpha->Beta demo.',
                     'START MISSION', kind='accent')
@@ -1036,6 +1075,7 @@ class MainWindow(QMainWindow):
         self.mission.cancel('stopped by operator', silent=True)
         self._seq = None
         self._seq_phase_label = ''
+        self._manual_hold = False
         self._seq_disarm()
         if 'robot2' in self.cmd:
             self.cmd['robot2'].send(cmds.CMD_PUMP, {'on': False})
