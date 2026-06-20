@@ -56,6 +56,7 @@ from ui.map.projection import (DIST_K, DIST_K_BY_KIND, FrameOffset, Pose,
                                apply_offset, detection_to_world,
                                offset_from_alignment, world_point_to_robot)
 from ui.fire_panel import FirePanel
+from ui.mission_panel import MissionPanel
 from ui.map.coverage import coverage_path
 from ui.mission import MissionExecutor
 from ui.ops_panel import OpsPanel
@@ -313,6 +314,17 @@ class MainWindow(QMainWindow):
         self.fire_panel.goRequested.connect(self._fire_go)
         self.fire_panel.stopRequested.connect(self._fire_stop)
 
+        # MASTER MISSION — the guided Alpha→Beta demo (mocked master/slave logs,
+        # centralized control). Tabbed next to AUTONOMY; the map stays visible.
+        self.mission_panel = MissionPanel()
+        self._dock_mission = self._dock('MISSION', self.mission_panel,
+                                        Qt.RightDockWidgetArea, 'dockMission')
+        self.tabifyDockWidget(self._dock_autonomy, self._dock_mission)
+        self._dock_autonomy.raise_()
+        self._mission_phase = 'idle'
+        self.mission_panel.actionClicked.connect(self._mission_action)
+        self.mission_panel.abortClicked.connect(self._mission_abort)
+
         self.resizeDocks([self._dock_fleet, self._dock_video], [300, 330],
                          Qt.Horizontal)
         self.resizeDocks([self._dock_fleet, self._dock_video], [380, 330],
@@ -341,7 +353,7 @@ class MainWindow(QMainWindow):
     def _build_menu(self) -> None:
         view = self.menuBar().addMenu('&View')
         for dock in (self._dock_fleet, self._dock_video, self._dock_ops,
-                     self._dock_autonomy):
+                     self._dock_autonomy, self._dock_mission):
             view.addAction(dock.toggleViewAction())
         view.addSeparator()
         fit = QAction('Fit map', self)
@@ -631,14 +643,27 @@ class MainWindow(QMainWindow):
         self.fire_panel.log_line('click the map where the fire is...')
         self.statusBar().showMessage('Click the map to place the FIRE', 6000)
 
+    def _clamp_to_map(self, x: float, y: float) -> tuple[float, float]:
+        """Keep a point INSIDE the mapped arena (with a small inset) so a fire
+        placed near/over the edge isn't dropped or sent off-map."""
+        if self._grid is None or self._grid_meta is None:
+            return x, y
+        res, ox, oy = self._grid_meta
+        h, w = self._grid.shape
+        m = 0.20
+        return (min(max(x, ox + m), ox + w * res - m),
+                min(max(y, oy + m), oy + h * res - m))
+
     def _place_fire(self, x: float, y: float) -> None:
         self._placing_fire = False
+        x, y = self._clamp_to_map(x, y)            # never let the fire leave the map
         self._fire_xy = (x, y)
         self.fire_panel.set_placing(False)
         self.map.add_marker('FIRE', x, y, conf=None, robot='operator',
                             t_wall=time.strftime('%H:%M:%S'))
         self.fire_panel.set_fire(x, y)
         self.fire_panel.log_line(f'fire placed at ({x:+.2f}, {y:+.2f}) m')
+        self._mission_on_fire_placed()             # notify the guided mission
 
     # ── shared sequence helpers ───────────────────────────────────────────
     def _seq_ready(self):
@@ -684,6 +709,7 @@ class MainWindow(QMainWindow):
         self.fire_panel.set_running(False)
         self.fire_panel.set_status(label, kind)
         self.fire_panel.log_line(label)
+        self._mission_on_seq_finish(label, kind)   # advance the guided mission
 
     def _seq_phase(self, label: str) -> None:
         """Set a steady running-phase status (re-shown after a dodge clears)."""
@@ -840,6 +866,113 @@ class MainWindow(QMainWindow):
         self.fire_panel.set_scan_planned(False)
         self.fire_panel.set_status('IDLE', 'idle')
         self.fire_panel.log_line('SCAN plan cancelled')
+
+    # ══════════════════════════════════════════════════════════════════════
+    # MASTER MISSION — guided Alpha→Beta demo (centralized; master/slave mocked)
+    # ══════════════════════════════════════════════════════════════════════
+    def _mstep(self, phase: str, prompt: str, btn: str, *,
+               enabled: bool = True, kind: str = 'accent') -> None:
+        self._mission_phase = phase
+        self.mission_panel.set_step(prompt, btn, enabled=enabled, kind=kind)
+
+    def _mission_action(self) -> None:
+        """The single context button — advances the guided flow by phase."""
+        p = self._mission_phase
+        if p == 'idle':
+            self.mission_panel.log_line('robot1 (Alpha): starting - I will map the area first.')
+            self._mstep('mapping',
+                        'Alpha is mapping. Let it build the map (drive Alpha or arm '
+                        'AUTONOMOUS), then click when the map looks complete.',
+                        'ALPHA: MAPPING DONE')
+        elif p == 'mapping':
+            if self._grid is None:
+                self.mission_panel.log_line('no map yet - let Alpha finish mapping first.')
+                return
+            self.mission_panel.log_line('robot1: mapping complete.')
+            self._mstep('ask_scan',
+                        'robot1 wants to send robot2 to scan the area for objects. Confirm?',
+                        'CONFIRM - send Beta to scan')
+        elif p == 'ask_scan':
+            if not self._aligned.get('robot2') or self._aligned_pose('robot2') is None:
+                self.mission_panel.log_line('SET POSE robot2 (Beta) on the map first '
+                                            '(place where it is + drag its heading).')
+                return
+            self.mission_panel.log_line('robot1 sent an action to robot2 to navigate '
+                                        'the map and find objects.')
+            self._scan_plan()
+            if not self._scan_planned:
+                self.mission_panel.log_line('could not build a scan path - check the map / Beta pose.')
+                return
+            self._mstep('scan_review',
+                        "Review robot2's suggested path on the map (drag a node to "
+                        "move, click to add, right-click to remove), then START.",
+                        'START SCAN')
+        elif p == 'scan_review':
+            self._scan_start()
+            self._mstep('scanning', 'robot2 is scanning the area...',
+                        'Beta scanning...', enabled=False)
+        elif p == 'ask_fire':
+            if self._fire_xy is None:
+                self.mission_panel.log_line('place the FIRE on the map first.')
+                return
+            self.mission_panel.log_line('robot1 sent an action to robot2 to go to '
+                                        'the fire and extinguish it.')
+            self._fire_go()
+            self._mstep('fire', 'robot2: en route -> pump 5 s -> return...',
+                        'Beta on fire mission...', enabled=False)
+        elif p == 'done':
+            self._mission_reset()
+
+    def _mission_enter_ask_fire(self) -> None:
+        self.mission_panel.log_line('robot1 wants to send robot2 to the fire to extinguish it.')
+        if self._fire_xy is None:
+            self._arm_place_fire()
+            self._mstep('ask_fire',
+                        'Click the map (inside the arena) to place the FIRE, then confirm.',
+                        'place the fire on the map...', enabled=False)
+        else:
+            self._mstep('ask_fire', 'Fire is placed. Confirm to send robot2.',
+                        'CONFIRM - send Beta to fire')
+
+    def _mission_on_fire_placed(self) -> None:
+        if self._mission_phase == 'ask_fire':
+            self.mission_panel.log_line('fire placed inside the map.')
+            self._mstep('ask_fire',
+                        'Fire placed. Confirm to send robot2 to extinguish it.',
+                        'CONFIRM - send Beta to fire')
+
+    def _mission_on_seq_finish(self, label: str, kind: str) -> None:
+        """Hook from _seq_finish — advances the mission when a SCAN/FIRE leg
+        completes. No-op unless a mission step is in flight."""
+        if self._mission_phase == 'scanning':
+            if kind == 'good':
+                self.mission_panel.log_line('robot2: scan complete, returned to base.')
+                self._mission_enter_ask_fire()
+            else:
+                self.mission_panel.log_line(f'robot2 scan stopped ({label}).')
+                self._mstep('scan_review', 'Scan stopped. START again to retry, or ABORT.',
+                            'RETRY SCAN', kind='warn')
+        elif self._mission_phase == 'fire':
+            if kind == 'good':
+                self.mission_panel.log_line('robot2: fire extinguished, returned to start.')
+                self._mstep('done', 'MISSION COMPLETE - robot2 scanned, extinguished '
+                            'the fire, and returned.', 'RESTART MISSION', kind='good')
+            else:
+                self.mission_panel.log_line(f'robot2 fire run stopped ({label}).')
+                self._mstep('ask_fire', 'Fire run stopped. Confirm to retry, or ABORT.',
+                            'CONFIRM - send Beta to fire', kind='warn')
+
+    def _mission_abort(self) -> None:
+        self._fire_stop()
+        self._scan_cancel()
+        self.mission_panel.log_line('MISSION ABORTED by operator.')
+        self._mission_reset()
+
+    def _mission_reset(self) -> None:
+        self._fire_xy = None
+        self.map.clear_reference_path()
+        self._mstep('idle', 'Press START MISSION to run the Alpha->Beta demo.',
+                    'START MISSION', kind='accent')
 
     # ── FIRE: navigate to the fire → pump 5 s → return to start ───────────
     def _fire_go(self) -> None:
@@ -1379,7 +1512,7 @@ class MainWindow(QMainWindow):
     # Bump when the default dock layout changes so stale saved arrangements
     # (e.g. a previous session that squeezed the OPS dock to a sliver) are
     # discarded instead of restored over the new default.
-    LAYOUT_VERSION = 3      # bumped: AUTONOMY moved from a center tab to a dock
+    LAYOUT_VERSION = 4      # bumped: added the MASTER MISSION dock
 
     def _settings(self) -> QSettings:
         return QSettings('GP', 'OperationsCenter')
