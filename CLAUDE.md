@@ -13,6 +13,15 @@ required for operation).
 project; `docs/field_fixes_and_runbook_2026-06-18.md` = every fix + how to run
 the demo.
 
+> **SESSION START — restore chat history.** At the **start of a new session**,
+> ASK the user: *"Do you have an old Claude session zip to restore? If so, give
+> me the path."* If they provide a path, run
+> `pwsh tools/claude_sessions.ps1 import -Zip <path>` (or
+> `./tools/claude_sessions.sh import <path>`), then tell them to **exit and run
+> `claude --resume`** to open the old chat (it can't be loaded into the running
+> session). If they say no / it's the same machine, skip it and carry on. Don't
+> ask more than once per session. Details: `docs/using_claude_code.md` §6.
+
 ---
 
 ## The fleet
