@@ -56,3 +56,9 @@ Swarm_Robot_System_Graduation_Book_CORRECTED.prefigs.docx
 # Claude Code session transcript bundles (contain chat history; transfer out-of-band)
 gp-claude-sessions.zip
 *.claude-sessions.zip
+
+# Local convenience copies / backups / friend source (canonical = CORRECTED.docx)
+Swarm_Robot_System_Graduation_Book_FINAL_with_figures.*
+Swarm_Robot_System_Graduation_Book_CORRECTED (1).docx
+_archive_figured_nofriend.docx
+Swarm_Robot_System_Graduation_Book_CORRECTED.prefigs.docx

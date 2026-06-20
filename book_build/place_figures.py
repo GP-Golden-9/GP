@@ -26,10 +26,19 @@ def body_start():
 
 def find_para(key, startswith=False):
     bs = body_start()
-    for i in range(bs, len(d.paragraphs)):
-        t = d.paragraphs[i].text.strip()
-        if (t.startswith(key) if startswith else t == key):
-            return d.paragraphs[i]
+    # tolerate headings that lost their leading number (e.g. "Problem Statement"
+    # instead of "1.3 Problem Statement") by also trying the title-only form.
+    title = re.sub(r"^\d+(\.\d+)*\s+", "", key)
+    cands = [key] if title == key else [key, title]
+    for cand in cands:
+        cnorm = " ".join(cand.split())
+        for i in range(bs, len(d.paragraphs)):
+            t = d.paragraphs[i].text.strip()
+            if startswith:
+                if t.startswith(cand):
+                    return d.paragraphs[i]
+            elif t == cand or " ".join(t.split()) == cnorm:
+                return d.paragraphs[i]
     raise KeyError(key)
 
 def new_after(par):

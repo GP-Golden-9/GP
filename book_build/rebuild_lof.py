@@ -76,6 +76,12 @@ def page_of(key, mode="max"):
     hits = [i for i in range(len(plow)) if key.lower() in plow[i]]
     if not hits: return None
     return footer(max(hits) if mode == "max" else min(hits))
+def page_caption(kind, num):
+    # boundary-aware caption lookup (avoids 'Figure 3.1' matching 3.10-3.17)
+    pat = re.compile(r"%s\s+%s\s*[–—:-]" % (kind, re.escape(num)))
+    for i in range(len(ptext)):
+        if pat.search(ptext[i]): return footer(i)
+    return None
 
 FM = {"acknowledgement": ("acknowledgement", "min"), "abstract": ("abstract", "min"),
       "table of contents": ("table of contents", "min"), "list of figures": ("figure 1.1", "min"),
@@ -85,8 +91,10 @@ def target(label):
     low = label.lower()
     if low in FM: return page_of(*FM[low])
     if re.match(r"^(chapter|CHAPTER)\s+\d", label, re.I): return page_of(label, "max")
-    m = re.match(r"^(Figure\s+\d+\.\d+)", label) or re.match(r"^(Table\s+\d+\.\d+)", label)
-    if m: return page_of(m.group(1), "max")
+    m = re.match(r"^Figure\s+(\d+\.\d+)", label)
+    if m: return page_caption("Figure", m.group(1))
+    m = re.match(r"^Table\s+(\d+\.\d+)", label)
+    if m: return page_caption("Table", m.group(1))
     if re.match(r"^\d+(\.\d+)*\s", label): return page_of(label, "max")
     return page_of(label, "max")
 
