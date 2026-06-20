@@ -22,6 +22,13 @@ zip_arg="${2:-}"
 
 repo="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 abs="$(cd "$repo" && pwd)"
+# Claude Code is a NATIVE app: it slugifies the OS-native path. On Git Bash/
+# MSYS the bash path is /c/Users/... -> slug -c-Users-... but Claude uses the
+# Windows path C:\Users\... -> slug C--Users-... . Convert before slugifying so
+# the import folder matches what `claude --resume` reads.
+if command -v cygpath >/dev/null 2>&1; then
+  abs="$(cygpath -w "$abs")"
+fi
 slug="$(printf '%s' "$abs" | sed 's/[^A-Za-z0-9]/-/g')"
 proj="$HOME/.claude/projects/$slug"
 
