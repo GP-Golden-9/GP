@@ -108,9 +108,15 @@ flashes via FTDI then ArduinoOTA — see `docs/robot3_flashing.md`.
 
 ---
 
-## Current hardware state & open tickets (2026-06-19)
+## Current hardware state & open tickets (2026-06-20)
 
 > Full session fix list + runbook: **`docs/field_fixes_and_runbook_2026-06-18.md`**.
+> SCAN-stuck fixes (2026-06-20, commit 63df654): `goal_fusion` gates forward on
+> the OPEN ultrasonic side so Beta no longer freezes at doorways/one-side walls
+> (REAL Beta — bundle-deploy `robot2_local_nav`); mission counts TURNING toward
+> a waypoint as progress (no false "stuck" on slow auto turns); SCAN plans A*
+> between coverage waypoints (through doorways). Sim made faithful (real-time
+> physics pacing + ported corner-escape ladder).
 > Recent: serial-lag wall-crash fixed (bridge drains to latest packet); yaw
 > integrated in the bridge at 50 Hz + scale-cal `gyro_scale_correction 1.0304`
 > + encoder-heading fallback on gyro dropout; stall-disarm anti-lockup

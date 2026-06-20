@@ -149,6 +149,60 @@ The panel refuses with a clear reason otherwise.
 - LIVE FEED falls back to **Beta's camera** when the active robot (e.g. Alpha)
   has no camera.
 
+### SCAN "stuck with nothing in front of it" — fixed (2026-06-20, commit 63df654)
+
+A long debug of SCAN stopping mid-sweep (in `--sim`) turned up five issues.
+**Two change real Beta's behaviour — both are improvements** — so this is in
+the runbook, not just a sim note. Found by instrumenting the live sim and
+reproducing each cause with a headless ZMQ operator.
+
+**Real-robot fixes (shared code — deploy to Beta to get them):**
+1. **`navigation/local_nav_math.py` `goal_fusion`** — forward speed is now
+   gated by the **more-OPEN** ultrasonic (min closeness), not the nearer wall.
+   A wall on ONE side (a doorway, or driving alongside a wall) no longer
+   freezes Beta in a potential-field local minimum — it keeps moving and steers
+   clear. Forward stops only when BOTH sides are blocked (a real head-on wall).
+   This is what made Beta "stop with nothing in front of it" at doorways. The
+   on-robot reverse/pivot escape ladder is unchanged; the ultrasonic hard-stop
+   (25 cm) and firmware guard still back it up.
+2. **`dashboard_qt/ui/mission.py`** — the no-progress "stuck" check now counts
+   **turning toward a waypoint** as progress, not only closing distance. With
+   the gentle autonomy gains (`goto.kp_angle 0.8`, `max_angular_rps 0.35`) a
+   rotate-then-drive turn keeps `vx=0` while it pivots; the old distance-only
+   check called that "stuck". Now only a robot that can neither get closer NOR
+   turn toward the goal is flagged.
+
+**Console-only fix:**
+3. **`dashboard_qt/ui/main_window.py`** — SCAN now plans **A\* between the
+   coverage waypoints** (`_route_through`) so room-to-room transits route
+   THROUGH doorways. Before, the raw coverage skeleton was handed to the
+   bias-follower, which steered straight at interior walls. (FIRE already used
+   A*; that's why FIRE worked and SCAN didn't.) Nav events also mirror to the
+   structured log now, so `--sim` shows WHY a run stopped.
+
+**Sim-faithfulness fixes (no robot impact, but needed to trust `--sim`):**
+4. `dashboard_qt/sim/fake_gateway.py` paces physics to the **real wall clock**
+   (it was stepping a fixed 0.02 s per loop and ran 2-3x real time, which
+   inflated control latency and oscillated the follower around waypoints).
+5. `fake_gateway` now ports `robot2_local_nav`'s **reverse → pivot →
+   commit-forward** corner-escape, so the sim backs out of corners like the
+   real robot (it previously only pivoted in place and pinned itself).
+
+**Operator tip:** SET POSE accuracy matters. If you place Beta at the wrong
+spot/heading, the whole coverage path maps to the wrong rooms and it can drive
+into a corner. Put the marker where Beta really is and drag toward its real
+heading.
+
+**Verification:** a headless operator driving the real gateway over ZMQ (real
+100 ms control latency, adversarial start heading) completes 15/15 SCAN
+waypoints, 0 skips. `python -m pytest tests -q` = 114 pass (incl. new
+`test_one_side_open_keeps_moving`).
+
+**To get #1 on Beta:** it's robot-side (`robot2_local_nav` imports
+`local_nav_math`) → bundle-deploy + `sudo systemctl restart gp-robot2`
+(no unit change, so no `install_systemd.sh`). #2 and #3 are laptop-side
+(console only). See the deploy section below.
+
 ## Deploying to the robots
 
 Units live in `/etc/systemd/system` — a plain `git pull` does NOT update them.
