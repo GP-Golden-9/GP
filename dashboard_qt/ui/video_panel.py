@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections import deque
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPixmap
@@ -28,6 +29,7 @@ class VideoPanel(QWidget):
         self._last_frame_local = 0.0
         self._frame_age_s: float | None = None
         self._fps = 0.0
+        self._frame_times: deque = deque()   # arrival times, last ~1 s
         self._ai_on = False
         self._ai_reason = 'starting…'
         self._robot = ''
@@ -60,10 +62,15 @@ class VideoPanel(QWidget):
         if img.isNull():
             return
         now = time.monotonic()
-        if self._last_frame_local:
-            dt = max(1e-3, now - self._last_frame_local)
-            inst = 1.0 / dt
-            self._fps = 0.9 * self._fps + 0.1 * inst if self._fps else inst
+        # TRUE rate = frames actually shown in the last second. The old
+        # instantaneous 1/dt spiked to hundreds of "FPS" because Beta's bursty
+        # WiFi (and clumped cross-thread signal delivery) lands frames <1 ms
+        # apart — a sliding window is immune to that and shows the real ~15 fps.
+        self._frame_times.append(now)
+        cutoff = now - 1.0
+        while self._frame_times and self._frame_times[0] < cutoff:
+            self._frame_times.popleft()
+        self._fps = float(len(self._frame_times))
         self._last_frame_local = now
         self._frame_age_s = frame_age_s
         self._pixmap = QPixmap.fromImage(img)
