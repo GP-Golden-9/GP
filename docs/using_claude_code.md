@@ -21,8 +21,9 @@ already knows the fleet (Alpha/Beta/Gamma), the architecture, the deploy
 quirks, the current hardware state, and the open tickets. You don't have to
 explain the project. Just tell it what you want.
 
-- `claude --resume` reopens a **past session on this machine** (sessions are
-  local; they don't sync between computers).
+- `claude --resume` reopens a **past session**. Sessions are stored locally per
+  machine, but you can carry them between **your own** computers — see
+  section 6.
 - `/help` lists CLI commands; `/clear` starts a fresh conversation.
 
 ---
@@ -92,13 +93,51 @@ or a `journalctl` snippet if you have one — Claude reads them.
 
 ---
 
-## 6. Where to look
+## 6. Move your chat history to another machine
+
+Claude Code keeps each terminal chat as a `.jsonl` transcript under
+`~/.claude/projects/<project-slug>/`, where the slug is the repo's absolute
+path with every non-alphanumeric character turned into `-` (so it differs per
+machine). To carry your GP chats to another computer and pick up with
+`claude --resume`, use the helper scripts (they recompute the slug on each
+side, so it works even if the repo path differs):
+
+**On the OLD machine** (from inside the repo):
+```
+pwsh tools/claude_sessions.ps1 export        # Windows  -> ~/gp-claude-sessions.zip
+./tools/claude_sessions.sh  export           # Linux/Mac/Git-Bash
+```
+
+**Transfer** `gp-claude-sessions.zip` to the other device (Drive / USB / scp).
+It is gitignored on purpose — **don't commit it** (transcripts hold chat
+history, and on this project, credentials that were typed in chat).
+
+**On the NEW machine** (after `git clone` + `cd GP`, logged into the **same**
+Claude account):
+```
+pwsh tools/claude_sessions.ps1 import -Zip <path>\gp-claude-sessions.zip
+./tools/claude_sessions.sh  import <path>/gp-claude-sessions.zip
+claude --resume                              # pick the chat from the list
+```
+
+Notes:
+- It moves **all** GP sessions, not just the current one. Re-run `export` for a
+  fresh snapshot (it overwrites the zip).
+- Claude prunes local transcripts after **30 days** by default
+  (`cleanupPeriodDays` in settings) — export before then, or raise that.
+- This is for *your own* devices (same account). To share the **work** with a
+  teammate, just push to GitHub — `CLAUDE.md` auto-loads the full context.
+
+---
+
+## 7. Where to look
 
 | You want… | File |
 |---|---|
 | Project overview (auto-loaded) | `CLAUDE.md` |
 | Every error → fix + how to run the demo | `docs/field_fixes_and_runbook_2026-06-18.md` |
 | Using Claude on another computer | `docs/claude_context_sync.md` |
+| Move your chat history to another machine | `tools/claude_sessions.ps1` / `.sh` (section 6) |
 | Flashing the ESP32 (Gamma) | `docs/robot3_flashing.md` |
 | Calibrate yaw / health-check / deploy | `tools/yaw_calib.py`, `tools/fleet_healthcheck.py`, `tools/deploy_and_verify.sh` |
 | Redacted memory snapshot | `.claude/memory/` |
