@@ -153,6 +153,69 @@ flashes via FTDI then ArduinoOTA — see `docs/robot3_flashing.md`.
 
 ---
 
+## 2026-06-20 session — autonomy hardening (problems → fixes)
+
+Read this before touching SCAN / Beta navigation. Full detail +
+how-to-run is in `docs/field_fixes_and_runbook_2026-06-18.md`. Commits:
+`63df654`, `ad412be`, `1b819d6` (+ doc commits). **The one ROBOT-side fix
+(#2) is deployed to Beta; everything else is console-only.**
+
+The whole session traced ONE complaint — "SCAN stops with nothing in front of
+it" — down through several layers, then added operator controls. Root tool:
+a faithful `--sim` + a headless ZMQ operator that drives the real fake-gateway.
+
+**Navigation root causes (fixes that change how Beta moves):**
+1. **SCAN didn't plan around interior walls** — it fed the raw coverage
+   skeleton to the bias-follower, which aimed Beta straight at walls. FIX:
+   `_route_through` runs A* between coverage nodes (through doorways).
+   Console: `dashboard_qt/ui/main_window.py`.
+2. **`goal_fusion` froze Beta at one-sided walls / doorways** (forward speed
+   gated by the NEARER wall → potential-field local minimum). FIX: gate forward
+   on the MORE-OPEN side (`min` closeness); stop only when BOTH sides blocked.
+   **ROBOT-side** (`navigation/local_nav_math.py`, used by `robot2_local_nav`)
+   — DEPLOYED to Beta; redeploy if you change it (bundle + restart gp-robot2).
+3. **"Stuck" was distance-only** so a slow rotate-then-drive turn read as
+   stuck. FIX: count TURNING toward the waypoint as progress too
+   (`dashboard_qt/ui/mission.py`).
+4. **Path drawn straight THROUGH objects after deleting a node** — an earlier
+   "drive un-routable nodes directly" fallback plowed through walls. FIX:
+   reverted — A* routes around obstacles; a walled-off node is DROPPED, never
+   straight-lined. The robot's OWN drifted pose is handled in `plan_path`
+   (frees a disc around Beta's cell) so the first leg still plans.
+5. **Won't turn around to a behind node (rocks / inches back & forth)** — the
+   ±π heading wrap flipped the turn sign. FIX: decisive turn-commit — pick one
+   spin direction past ~80° and hold it (no driving) until facing the goal
+   (`mission.py`).
+6. **Routes hugged walls** → planner now prefers the CENTRE of open space
+   (4 soft-cost rings, `dashboard_qt/ui/map/planner.py`).
+7. **Drift tolerance** (Beta is lidar-less → pose drifts → map can read it
+   "inside a wall" and refuse to move): planner frees a disc around the robot
+   cell + wider goal snap; on a true NO PATH, Beta heads for a single goal
+   REACTIVELY (ultrasonics = reality, a real wall still stops it at 25 cm).
+
+**Sim faithfulness (no robot impact, but needed to trust `--sim`):** the fake
+gateway paced physics to the wall clock (was 2-3× real-time → control
+oscillation) and got `robot2_local_nav`'s reverse→pivot→commit corner-escape
+ported in (`dashboard_qt/sim/fake_gateway.py`).
+
+**Operator controls (console-only):** SCAN is now **PLAN → review/edit →
+START** (it does NOT move on SCAN AREA); the suggested path shows as draggable
+NUMBERED nodes (green START / orange END) — **EDIT PATH**: drag=move,
+click=add, right-click=remove, A* re-routes live; **manual ASSIST** — nudging
+the joystick mid-run PAUSES the mission and RESUMES from the new pose on
+release (no cancel).
+
+**Still true / open:**
+- The fundamental limit is **Beta's lidar-less odometry drift** — these
+  changes TOLERATE it, they don't remove it. A periodic **SET POSE** re-align
+  during a long run is the practical mitigation (no scan-match hardware).
+- Residual **forward/back oscillation right next to a wall** lives in the
+  ON-ROBOT escape ladder (`robot2_local_nav`), not the console — grab the NAV
+  LOG during it and tune the ladder there, then redeploy to Beta.
+- GY-87 IMU 5 V rewire is still the #1 hardware ticket (above).
+
+---
+
 ## Credentials (NOT in git)
 
 - Robot SSH: user `muc` on `robot.local` / `robot2.local` (key auth installed;
