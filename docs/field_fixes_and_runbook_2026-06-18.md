@@ -203,6 +203,34 @@ waypoints, 0 skips. `python -m pytest tests -q` = 114 pass (incl. new
 (no unit change, so no `install_systemd.sh`). #2 and #3 are laptop-side
 (console only). See the deploy section below.
 
+### Operator autonomy controls — SCAN is plan → review/edit → START (2026-06-20)
+
+All console-side (just run the dashboard — no robot redeploy). The fusion fix
+above IS deployed to Beta.
+
+- **SCAN AREA = PLAN, it does NOT move.** It shows the suggested path as
+  draggable, numbered **nodes** (green START / orange END) plus the dashed A*
+  route. Review/edit, then **START SCAN** drives it. **CANCEL** / **RE-PLAN**
+  too. Nothing moves until START.
+- **EDIT PATH** (map toolbar, or the nodes shown by SCAN): **drag** a node to
+  move · **click** empty map to add (splits the nearest segment) · **right-click**
+  a node to remove. The dashed A* route re-plans live around obstacles — a
+  walled-off node is dropped, never connected by a straight line through a wall.
+- **Manual ASSIST mid-run:** grab the joystick/WASD during SCAN/FIRE → it
+  PAUSES (status "MANUAL ASSIST"), you hand-drive past a snag, and it RESUMES
+  from the new pose ~1 s after you let go (no cancelling the run). Esc/E-stop
+  still fully stops.
+- **Decisive turn-around:** when the next node is behind, Beta commits to one
+  spin direction and rotates to face it before driving (no rock-at-180°).
+- **Wide-open routing + drift tolerance:** A* prefers the centre of open space
+  (away from walls); the planner frees a disc around Beta's own cell so a
+  lidar-less, drifted pose that reads "in a wall" doesn't block planning; on a
+  true NO PATH, Beta heads for a single goal reactively (ultrasonics = reality,
+  a real wall still stops it at 25 cm).
+- **Known limit:** the forward/back oscillation that can still appear right
+  next to a wall is the ON-ROBOT escape ladder (`robot2_local_nav`), not the
+  console. Grab the NAV LOG if it persists and tune the ladder there.
+
 ## Deploying to the robots
 
 Units live in `/etc/systemd/system` — a plain `git pull` does NOT update them.

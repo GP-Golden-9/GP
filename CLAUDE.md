@@ -117,6 +117,11 @@ flashes via FTDI then ArduinoOTA — see `docs/robot3_flashing.md`.
 > a waypoint as progress (no false "stuck" on slow auto turns); SCAN plans A*
 > between coverage waypoints (through doorways). Sim made faithful (real-time
 > physics pacing + ported corner-escape ladder).
+> Operator autonomy (2026-06-20, console-only): SCAN is now PLAN → review/edit →
+> START (draggable numbered nodes, EDIT PATH, A* re-route around walls, no
+> straight-through), manual ASSIST pauses/resumes a run, decisive turn-around,
+> wide-open routing + drift tolerance. Forward/back oscillation next to a wall
+> is the on-robot escape ladder (`robot2_local_nav`), tune there with NAV LOG.
 > Recent: serial-lag wall-crash fixed (bridge drains to latest packet); yaw
 > integrated in the bridge at 50 Hz + scale-cal `gyro_scale_correction 1.0304`
 > + encoder-heading fallback on gyro dropout; stall-disarm anti-lockup
