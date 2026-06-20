@@ -45,6 +45,12 @@ from navigation.local_nav_math import goal_fusion             # noqa: E402
 US_ANGLE = 0.22           # rad — sim front-left/right ultrasonic spread
 US_MAX = 1.50             # m — firmware echo cap
 US_STOP, US_SLOW = 0.25, 0.60
+# Reactive recovery — mirrors navigation/robot2_local_nav.py so the sim
+# escapes a corner the way Beta really does (reverse -> pivot -> commit
+# forward, alternating side on a repeat). Without it the sim only pivoted in
+# place and pinned itself in corners that the real robot backs out of.
+REV_SPEED, REV_TIME_S, TURN_LOCK_S, COMMIT_TIME_S = 0.10, 0.6, 1.0, 1.2
+TURN_RATE, SLOW_SPEED = 0.35, 0.07
 
 RES = 0.05
 GRID_N = 80                       # 80 × 0.05 = 4 m
@@ -84,6 +90,11 @@ class SimRobot:
         # streamed heading bias (Beta's map-aware go-to-goal) — see local_nav
         self.bias_vx = self.bias_wz = 0.0
         self.bias_t = -1e9
+        # reactive-recovery latches (mirror robot2_local_nav)
+        self.turn_dir = 0
+        self.rev_until = self.turn_until = self.commit_until = 0.0
+        self._last_escape_dir = 0
+        self._last_escape_t = -1e9
 
     def occupied(self, x: float, y: float) -> bool:
         i = int((y - ORIGIN) / RES)
@@ -139,17 +150,62 @@ class SimRobot:
         right = min(US_MAX, self.raycast(self.th - US_ANGLE))
         return left, right
 
+    def _start_escape(self, now: float, prefer: int, reverse: bool = True) -> None:
+        """Set up a full escape: (reverse) -> pivot -> commit-forward. Alternates
+        direction if we just escaped the same way (breaks a repeated trap).
+        Direct port of robot2_local_nav._start_escape."""
+        if now - self._last_escape_t < 5.0 and self._last_escape_dir == prefer:
+            prefer = -prefer
+        self._last_escape_dir = prefer
+        self._last_escape_t = now
+        self.turn_dir = prefer
+        self.rev_until = (now + REV_TIME_S) if reverse else 0.0
+        self.turn_until = (self.rev_until + TURN_LOCK_S) if reverse else (now + TURN_LOCK_S)
+        self.commit_until = self.turn_until + COMMIT_TIME_S
+
     def _bias_step(self) -> None:
         """Drive from the streamed heading bias, fused with the sim's own
-        ultrasonics — mirrors robot2_local_nav so go-to-goal + dodging can be
-        exercised with zero hardware."""
+        ultrasonics, with the SAME recovery ladder as robot2_local_nav so
+        go-to-goal + dodging + corner-escape can be exercised with zero
+        hardware. Hard recovery overrides are evaluated FIRST, then the clear-
+        band goal fusion."""
+        now = time.monotonic()
         left, right = self.us()
-        if min(left, right) < US_STOP:          # too close → pivot to open side
-            self.v, self.w = 0.0, 0.4 * (1 if left > right else -1)
+        nearest = min(left, right)
+        # 1. backing out of a corner
+        if now < self.rev_until:
+            self.v, self.w = -REV_SPEED, 0.0
             return
+        # 2. both sides blocked → full escape (reverse + turn + commit)
+        if left <= US_STOP and right <= US_STOP:
+            if now > self.commit_until:
+                self._start_escape(now, 1 if left > right else -1, reverse=True)
+            self.v, self.w = -REV_SPEED, 0.0
+            return
+        # 3. one side too close → escape away (turn, then commit forward)
+        if nearest <= US_STOP:
+            if now > self.commit_until:
+                self._start_escape(now, -1 if left < right else 1, reverse=False)
+            self.v, self.w = 0.0, self.turn_dir * TURN_RATE
+            return
+        # 4. finish the pivot (anti-oscillation)
+        if now < self.turn_until and self.turn_dir != 0:
+            self.v, self.w = 0.0, self.turn_dir * TURN_RATE
+            return
+        # 5. commit forward to CLEAR the obstacle before re-seeking the goal —
+        #    this is what breaks the pivot-in-place oscillation.
+        if now < self.commit_until and self.turn_dir != 0:
+            if nearest <= US_STOP:
+                self._start_escape(now, -self.turn_dir, reverse=True)
+                self.v, self.w = -REV_SPEED, 0.0
+                return
+            self.v, self.w = SLOW_SPEED, self.turn_dir * TURN_RATE * 0.3
+            return
+        self.turn_dir = 0
+        # clear band: goal fusion on the fresh bias
         self.v, self.w, _ = goal_fusion(
             self.bias_vx, self.bias_wz, left, right,
-            stop=US_STOP, slow=US_SLOW, max_lin=0.15, turn=0.40,
+            stop=US_STOP, slow=US_SLOW, max_lin=0.12, turn=TURN_RATE,
             k_rep=0.40, deadband=0.10)
 
     def raycast(self, angle: float) -> float:
@@ -357,6 +413,7 @@ def main() -> int:
     unknown_z = zlib.compress(np.full_like(grid, -1).tobytes(), 3)
     MAP_REBUILD_S = 3.0      # how long the map stays blank after a reset
     t0 = time.monotonic()
+    last_step = t0
     last_tele = last_scan = last_map = last_health = 0.0
     try:
         while True:
@@ -370,7 +427,18 @@ def main() -> int:
             if server.deadman_tripped():
                 robot.v = robot.w = 0.0
             robot.estop = server.estop_latched or robot.estop
-            robot.step(1.0 / PHYS_HZ)
+            # Advance physics by REAL elapsed wall-time, not a fixed 1/PHYS_HZ.
+            # The loop spins faster than 50 Hz, so stepping a fixed 0.02 s each
+            # pass ran the sim 2-3x faster than real time — while the operator
+            # control loop (telemetry -> mission tick -> nav bias) updates at
+            # real-time 100 ms. That inflated control latency in sim-time and
+            # made autonomous rotate-then-drive overshoot/oscillate around
+            # waypoints (SCAN "stuck" with clear space). Pacing physics to the
+            # wall clock makes the sim faithful to how Beta actually moves.
+            dt = min(now - last_step, 0.05)       # clamp so a scheduling hiccup
+            last_step = now                       # can't fling the robot
+            if dt > 0:
+                robot.step(dt)
 
             if now - last_tele >= 0.05:
                 last_tele = now

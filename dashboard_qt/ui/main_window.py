@@ -24,6 +24,7 @@ poses are transformed in, goals are transformed back out.
 from __future__ import annotations
 
 import glob
+import logging
 import math
 import os
 import time
@@ -635,6 +636,31 @@ class MainWindow(QMainWindow):
         self._seq_phase_label = label
         self.fire_panel.set_status(label, 'accent')
 
+    def _route_through(self, pts: list[tuple[float, float]],
+                       start: tuple[float, float]) -> tuple[list, int]:
+        """Stitch A* legs through the coverage waypoints into ONE obstacle-free
+        path. The coverage skeleton ignores interior walls — consecutive points
+        can sit in different rooms — and Beta follows it with only a
+        straight-line heading bias, so a raw skeleton drives it INTO a wall (the
+        'stuck with nothing in front' symptom). Planning each leg routes the
+        transits through doorways and drops any waypoint walled off from the
+        rest, so the follower only ever sees short straight legs."""
+        res, ox, oy = self._grid_meta
+        prof = self.app_cfg.profile('robot2')
+        out: list[tuple[float, float]] = []
+        cur = start
+        dropped = 0
+        for gx, gy in pts:
+            legs = plan_path(self._grid, res, ox, oy, cur, (gx, gy),
+                             hard_radius_m=prof.plan_hard_radius_m,
+                             soft_extra_m=prof.plan_soft_extra_m)
+            if not legs:
+                dropped += 1
+                continue
+            out.extend(legs)
+            cur = legs[-1]
+        return out, dropped
+
     # ── SCAN: cover the mapped area, then return to base ──────────────────
     def _scan_area(self) -> None:
         pose = self._seq_ready()
@@ -644,24 +670,32 @@ class MainWindow(QMainWindow):
         res, ox, oy = self._grid_meta
         prof = self.app_cfg.profile('robot2')
         half = (prof.footprint or {}).get('half_width_m', 0.10)
-        path = coverage_path(self._grid, res, ox, oy,
-                             lane_m=0.6,                # coarse sweeps (simple path)
-                             clearance_m=half + 0.12,   # keep waypoints off walls
-                             max_waypoints=14,          # cap complexity
-                             start=(pose.x, pose.y))
-        if not path:
+        skeleton = coverage_path(self._grid, res, ox, oy,
+                                 lane_m=0.6,                # coarse sweeps (simple path)
+                                 clearance_m=half + 0.12,   # keep waypoints off walls
+                                 max_waypoints=14,          # cap complexity
+                                 start=(pose.x, pose.y))
+        if not skeleton:
             self.fire_panel.set_status('no free area to scan', 'warn')
+            return
+        # Plan A* between the coverage points so room-to-room transits go
+        # THROUGH doorways (the bias-follower can't thread a doorway on its own).
+        path, dropped = self._route_through(skeleton, (pose.x, pose.y))
+        if not path:
+            self.fire_panel.set_status('no reachable area to scan', 'warn')
             return
         self._seq_arm()
         self._seq = 'scan_cover'
         self.map.set_reference_path(path)           # persistent reference viz
-        # Follow the coverage path LOOSELY: skip a waypoint it can't reach in
+        # Follow the routed path LOOSELY: skip a waypoint it can't reach in
         # 12 s (don't get trapped in a dead end), and accept 'close enough'.
         self.mission.start('robot2', path, gains=prof.goto,
                            skip_stuck=True, wp_timeout=12.0, tol=0.45)
         self.fire_panel.set_running(True)
         self._seq_phase(f'SCANNING — {len(path)} waypoints')
-        self.fire_panel.log_line(f'SCAN: covering the area ({len(path)} waypoints)')
+        msg = f'SCAN: covering the area ({len(path)} waypoints'
+        msg += f', {dropped} unreachable skipped)' if dropped else ')'
+        self.fire_panel.log_line(msg)
 
     # ── FIRE: navigate to the fire → pump 5 s → return to start ───────────
     def _fire_go(self) -> None:
@@ -1260,6 +1294,9 @@ class MainWindow(QMainWindow):
 
     def _log(self, line: str) -> None:
         self.drawer.log.append_line(line, source='local')
+        # mirror nav/sequence events to the structured console log so headless
+        # debugging (e.g. --sim) can see WHY a run stopped, not just the UI.
+        logging.getLogger('gp.dashboard').info(line)
 
     def closeEvent(self, event) -> None:
         s = self._settings()

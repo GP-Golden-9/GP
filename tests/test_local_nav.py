@@ -57,6 +57,16 @@ def test_dead_ahead_blocks_forward():
     assert vx == 0.0 and blocked
 
 
+def test_one_side_open_keeps_moving():
+    # Doorway / wall-on-one-side: a near wall on the RIGHT (0.27 m) with the
+    # LEFT open must NOT freeze forward motion — it should keep advancing and
+    # steer left. Gating forward on the nearer wall (the old bug) pinned Beta
+    # in place at every doorway.
+    vx, wz, blocked = goal_fusion(0.15, 0.0, left=1.50, right=0.27, **FUSE)
+    assert vx > 0.10 and not blocked        # near-full forward, not frozen
+    assert wz > 0.0                         # steers left, away from the wall
+
+
 def test_deadband_ignores_tiny_imbalance():
     # closeness diff below the deadband → no steer despite a small asymmetry
     _, wz, _ = goal_fusion(0.15, 0.0, left=0.50, right=0.52, **FUSE)

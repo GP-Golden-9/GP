@@ -32,7 +32,15 @@ def goal_fusion(bias_vx: float, bias_wz: float, left: float, right: float, *,
     # term is (right-closeness − left-closeness).
     diff = pr - pl
     wz_rep = k_rep * diff if abs(diff) >= deadband else 0.0
-    fwd_scale = max(0.0, 1.0 - max(pl, pr))
+    # Forward motion is gated by the MORE-OPEN side (min closeness), not the
+    # nearer wall. A wall on ONE side (a doorway, or driving alongside a wall)
+    # must NOT freeze the robot — it should keep moving and let the repulsion
+    # term steer it clear. Gating on max() instead pinned Beta in a potential-
+    # field local minimum at every doorway (vx→0 while one post sat ~0.27 m
+    # away) so it never threaded the gap. Forward stops only when BOTH sides
+    # are blocked (a genuine head-on wall / dead end).
+    open_side = min(pl, pr)
+    fwd_scale = max(0.0, 1.0 - open_side)
     vx = max(0.0, min(max_lin, bias_vx * fwd_scale))
     wz = max(-turn, min(turn, bias_wz + wz_rep))
     return vx, wz, (fwd_scale == 0.0)

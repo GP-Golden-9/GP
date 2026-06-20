@@ -50,6 +50,7 @@ class MissionExecutor(QObject):
         self._tol = WP_TOLERANCE_M
         self._skips = 0
         self._best_dist = float('inf')
+        self._best_ang = float('inf')
         self._wp_progress_t = 0.0
         self._timer = QTimer(self)
         self._timer.setInterval(TICK_MS)
@@ -113,6 +114,7 @@ class MissionExecutor(QObject):
         x, y = self._wps[self._idx]
         self._wp_started = time.monotonic()
         self._best_dist = float('inf')          # progress tracking (see _tick)
+        self._best_ang = float('inf')
         self._wp_progress_t = self._wp_started
         self._send(x, y)
         self.waypointActive.emit(self._idx + 1, len(self._wps), x, y)
@@ -133,13 +135,22 @@ class MissionExecutor(QObject):
             self._skips = 0
             self._advance()
             return
-        # PROGRESS-based stuck detection: a far waypoint is fine as long as
-        # Beta keeps getting closer to it — only the LACK of progress (it can't
-        # close the distance) means it's genuinely blocked. This is what stops
-        # a big map from skipping reachable-but-distant waypoints.
+        # PROGRESS-based stuck detection. A far waypoint is fine as long as Beta
+        # is still working toward it — either CLOSING DISTANCE or TURNING TO FACE
+        # it. The follower is rotate-then-drive: during the turn phase vx=0 so the
+        # distance doesn't shrink, but that's legitimate progress, not a stall.
+        # Counting only distance falsely flagged "stuck" mid-turn under the gentle
+        # autonomy gains (slow kp_angle) — so we also reset the clock while the
+        # heading error to the waypoint keeps shrinking. Only when BOTH stall
+        # (can't get closer AND can't turn toward it) is it genuinely blocked.
         now = time.monotonic()
+        ang_err = abs(math.atan2(math.sin(math.atan2(y - py, x - px) - pth),
+                                 math.cos(math.atan2(y - py, x - px) - pth)))
         if dist < self._best_dist - 0.05:        # closing in → reset the clock
             self._best_dist = dist
+            self._wp_progress_t = now
+        if ang_err < self._best_ang - 0.05:      # turning to face it → also progress
+            self._best_ang = ang_err
             self._wp_progress_t = now
         if now - self._wp_progress_t > self._timeout:
             if self._skip_stuck:
@@ -148,7 +159,9 @@ class MissionExecutor(QObject):
                 self._skips += 1
                 self.progress.emit(
                     f'waypoint {self._idx + 1} unreachable — skipping '
-                    f'({self._skips}/{MAX_SKIPS})')
+                    f'({self._skips}/{MAX_SKIPS}); target ({x:+.2f},{y:+.2f}) '
+                    f'robot ({px:+.2f},{py:+.2f}) closest={self._best_dist:.2f}m '
+                    f'tol={tol:.2f}m')
                 if self._skips >= MAX_SKIPS:
                     self._timer.stop()
                     self.missionFinished.emit('stuck')
