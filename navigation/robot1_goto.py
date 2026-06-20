@@ -54,7 +54,12 @@ CONTROL_HZ = 20.0
 # past it anyway, so those beams are masked instead of hand-tuning the
 # footprint rectangle forever.
 SELF_LEARN_SCANS = 15          # ~2 s at boot
-SELF_RADIUS_BOUND = 0.28       # fixtures hug the body (measured: 0.21-0.24)
+SELF_RADIUS_BOUND = 0.33       # fixtures hug the body (measured 0.21-0.24, but
+                               # the front cable-bracket crept to ~0.29 after a
+                               # move — it was landing in the 0.28-0.35 dead band
+                               # (past the mask, inside stop_ahead) and blocking
+                               # every goal. Raised 0.28->0.33 to re-mask it.
+                               # TODO: tuck the bracket back to <=0.24 and revert.
 SELF_BAND_M = 0.06             # masked beam ignores ONLY returns at the
                                # fixture's constant distance — anything
                                # closer than that counts as an obstacle

@@ -20,6 +20,9 @@ TICK_MS = 100                  # 10 Hz — also the heading-bias stream rate
 MAX_SKIPS = 4                  # consecutive unreachable waypoints → give up
 TURN_COMMIT_RAD = 1.40         # heading error past which we commit to spinning
                                # round (≈80°) — keeps a turn-around decisive
+DRIVE_HEADING_DEADBAND = 0.09  # rad (~5°): while DRIVING, don't re-steer for
+                               # errors smaller than this — stops the left/right
+                               # snake from chasing tiny heading noise
 
 # Default goto gains (mirror config/robot2.yaml goto.*); overridden per robot
 # via start(..., gains=...).
@@ -232,9 +235,20 @@ class MissionExecutor(QObject):
         if self._turn_commit != 0:
             self.biasComputed.emit(0.0, self._turn_commit * max_w)
             return
-        wz = max(-max_w, min(max_w, g['kp_angle'] * ang_err))
         if abs(ang_err) > tol:
-            vx = 0.0                       # face the waypoint before driving
+            # not facing the waypoint yet → rotate in place (full correction)
+            vx = 0.0
+            wz = max(-max_w, min(max_w, g['kp_angle'] * ang_err))
         else:
+            # DRIVING: hold a straight line. Continuously re-steering for tiny
+            # heading errors (plus control latency) makes Beta snake left/right.
+            # Inside a small deadband, command zero turn (go straight); past it,
+            # correct GENTLY (half gain, half rate) so it eases back on course
+            # instead of overshooting into a weave.
             vx = min(g['max_linear_mps'], g['kp_distance'] * dist)
+            if abs(ang_err) < DRIVE_HEADING_DEADBAND:
+                wz = 0.0
+            else:
+                wz = max(-0.5 * max_w, min(0.5 * max_w,
+                                           0.5 * g['kp_angle'] * ang_err))
         self.biasComputed.emit(vx, wz)
