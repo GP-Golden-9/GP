@@ -34,9 +34,11 @@ from PySide6.QtWidgets import (QFrame, QGraphicsPathItem, QGraphicsPixmapItem,
 from ui import theme
 
 MODE_NAV, MODE_POSE, MODE_MARK, MODE_DEL = 'nav', 'pose', 'mark', 'del'
+MODE_EDIT = 'edit'                  # drag/add/remove suggested-path waypoints
 MARKER_SUPPRESS_S = 600.0      # after the operator removes a wrong detection,
                                # ignore re-detections of it for this long
 MIN_PPM, MAX_PPM = 12, 900
+EDIT_GRAB_M = 0.22             # world-radius to grab a path waypoint handle
 TRAIL_MAX_POINTS = 400
 TRAIL_MIN_STEP_M = 0.04
 SCAN_REBUILD_MIN_S = 0.1
@@ -99,6 +101,18 @@ def _blend_angle(a: float, b: float, alpha: float) -> float:
     return a + alpha * d
 
 
+def _point_seg_dist(px, py, a, b) -> float:
+    """Shortest distance from point (px,py) to segment a→b (world meters)."""
+    ax, ay = a
+    bx, by = b
+    dx, dy = bx - ax, by - ay
+    seg2 = dx * dx + dy * dy
+    if seg2 <= 1e-9:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / seg2))
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+
 # Markers accumulate over a long session; an unbounded scene slowly lags the
 # 30 Hz render. Cap the count and expire stale ones.
 MARKER_MAX = 40
@@ -123,6 +137,10 @@ class _Canvas(QGraphicsView):
     clicked = Signal(float, float)             # NAV / MARK click
     posePicked = Signal(float, float, float)   # SET POSE commit
     userNavigated = Signal()                   # manual zoom/pan → stop auto-fit
+    editPress = Signal(float, float)           # EDIT: left-press (grab/insert)
+    editMove = Signal(float, float)            # EDIT: left-drag
+    editRelease = Signal(float, float)         # EDIT: left-release
+    editDelete = Signal(float, float)          # EDIT: right-click (no pan)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -144,6 +162,8 @@ class _Canvas(QGraphicsView):
 
         self.mode = MODE_NAV
         self._pan_last = None
+        self._edit_left = False                # mid left-drag in EDIT mode
+        self._edit_rpress: QPointF | None = None   # right-press (delete vs pan)
         self._pose_press: QPointF | None = None
         self._pose_preview = QGraphicsPathItem()
         self._pose_preview.setPen(QPen(QColor(theme.ACCENT), 0.03))
@@ -163,6 +183,8 @@ class _Canvas(QGraphicsView):
 
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.RightButton:
+            if self.mode == MODE_EDIT:
+                self._edit_rpress = e.position()   # decided on release: del vs pan
             self._pan_last = e.position()
             self.setCursor(Qt.ClosedHandCursor)
             self.userNavigated.emit()
@@ -172,6 +194,10 @@ class _Canvas(QGraphicsView):
             if self.mode == MODE_POSE:
                 self._pose_press = p
                 self._draw_pose_preview(p, p)
+                return
+            if self.mode == MODE_EDIT:
+                self._edit_left = True
+                self.editPress.emit(p.x(), p.y())
                 return
             self.clicked.emit(p.x(), p.y())
         super().mousePressEvent(e)
@@ -190,12 +216,26 @@ class _Canvas(QGraphicsView):
         if self._pose_press is not None:
             self._draw_pose_preview(self._pose_press, p)
             return
+        if self._edit_left:
+            self.editMove.emit(p.x(), p.y())
+            return
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e) -> None:
         if e.button() == Qt.RightButton:
             self._pan_last = None
             self.setCursor(Qt.ArrowCursor)
+            if self.mode == MODE_EDIT and self._edit_rpress is not None:
+                moved = (e.position() - self._edit_rpress).manhattanLength()
+                self._edit_rpress = None
+                if moved < 6:                  # a click, not a pan → delete
+                    p = self.mapToScene(e.position().toPoint())
+                    self.editDelete.emit(p.x(), p.y())
+            return
+        if e.button() == Qt.LeftButton and self._edit_left:
+            self._edit_left = False
+            p = self.mapToScene(e.position().toPoint())
+            self.editRelease.emit(p.x(), p.y())
             return
         if e.button() == Qt.LeftButton and self._pose_press is not None:
             start = self._pose_press
@@ -268,6 +308,8 @@ class MapWidget(QWidget):
     markerPlaced = Signal(float, float)
     markersChanged = Signal(list)              # list[Marker]
     resetMapRequested = Signal()               # operator asked to clear the map
+    editModeRequested = Signal()               # EDIT PATH toggled on (needs a skeleton)
+    pathEdited = Signal(list)                   # committed edit → list[(x,y)]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -321,6 +363,17 @@ class MapWidget(QWidget):
         self._ref_path_item.setPen(rpen)
         self._ref_path_item.setZValue(4.2)
         sc.addItem(self._ref_path_item)
+        # EDIT PATH: draggable waypoint skeleton (handles + connecting line)
+        self._edit_line = QGraphicsPathItem()
+        epen = QPen(QColor(theme.ACCENT), 0.025)
+        epen.setCapStyle(Qt.RoundCap)
+        self._edit_line.setPen(epen)
+        self._edit_line.setZValue(9.0)
+        sc.addItem(self._edit_line)
+        self._editing = False
+        self._edit_wps: list[tuple[float, float]] = []
+        self._edit_handles: list = []          # (dot QGraphicsPathItem, label)
+        self._drag_idx: int | None = None
         self._goal_mark = QGraphicsPathItem()
         self._goal_mark.setPen(QPen(QColor(theme.GOAL_COLOR), 0.025))
         self._goal_mark.setZValue(5)
@@ -350,6 +403,10 @@ class MapWidget(QWidget):
         self.canvas.posePicked.connect(self.posePicked)
         self.canvas.userNavigated.connect(
             lambda: setattr(self, '_user_nav', True))
+        self.canvas.editPress.connect(self._on_edit_press)
+        self.canvas.editMove.connect(self._on_edit_move)
+        self.canvas.editRelease.connect(self._on_edit_release)
+        self.canvas.editDelete.connect(self._on_edit_delete)
 
     # ════════ overlay (toolbar / chips on the canvas) ════════
     def _build_overlay(self) -> None:
@@ -379,6 +436,11 @@ class MapWidget(QWidget):
         for b, mode in ((self.btn_nav, MODE_NAV), (self.btn_pose, MODE_POSE),
                         (self.btn_mark, MODE_MARK), (self.btn_del, MODE_DEL)):
             b.clicked.connect(lambda _=False, b=b, m=mode: self._set_mode(b, m))
+
+        self.btn_edit = tool('✎ EDIT PATH', 'Edit the SCAN suggested path: drag a '
+                                            'dot to move, click empty to add, '
+                                            'right-click a dot to remove')
+        self.btn_edit.toggled.connect(self._on_edit_toggled)
 
         sep = QLabel('│')
         sep.setStyleSheet(f'color:{theme.BORDER};')
@@ -440,7 +502,9 @@ class MapWidget(QWidget):
         self._mode_hint.move(10, 10 + self._toolbar.height() + 6)
 
     def _set_mode(self, btn, mode: str) -> None:
-        for b in (self.btn_nav, self.btn_pose, self.btn_mark):
+        if self._editing:                  # leaving EDIT for another tool
+            self.btn_edit.setChecked(False)   # → _on_edit_toggled(False) ends it
+        for b in (self.btn_nav, self.btn_pose, self.btn_mark, self.btn_del):
             b.setChecked(b is btn)
         self.canvas.mode = mode
         hints = {MODE_NAV: '',
@@ -739,6 +803,152 @@ class MapWidget(QWidget):
 
     def clear_reference_path(self) -> None:
         self._ref_path_item.setPath(QPainterPath())
+
+    # ════════ EDIT PATH (draggable suggested-path waypoints) ════════
+    def _on_edit_toggled(self, on: bool) -> None:
+        if on:
+            for b in (self.btn_nav, self.btn_pose, self.btn_mark, self.btn_del):
+                b.setChecked(False)
+            self.editModeRequested.emit()      # main window supplies the skeleton
+        elif self._editing:
+            self.end_path_edit()
+
+    def begin_path_edit(self, waypoints: list[tuple[float, float]],
+                        show_line: bool = True) -> None:
+        """Enter EDIT mode on a waypoint skeleton: draws numbered draggable
+        handles (+ a straight connecting line unless ``show_line`` is False —
+        e.g. when a dashed A* route is already shown underneath)."""
+        self._edit_wps = [(float(x), float(y)) for x, y in waypoints]
+        self._editing = True
+        self._drag_idx = None
+        self._edit_show_line = show_line
+        self.canvas.mode = MODE_EDIT
+        if not self.btn_edit.isChecked():
+            self.btn_edit.blockSignals(True)
+            self.btn_edit.setChecked(True)
+            self.btn_edit.blockSignals(False)
+        if show_line:
+            self.clear_reference_path()
+        self._edit_redraw()
+        self._mode_hint.setText('EDIT PATH: drag a dot = move · click empty = add '
+                                '· right-click a dot = remove')
+        self._mode_hint.setVisible(True)
+        self._mode_hint.adjustSize()
+
+    def end_path_edit(self) -> list:
+        """Leave EDIT mode; returns the final waypoint list."""
+        self._editing = False
+        self._drag_idx = None
+        self._clear_edit_items()
+        self.canvas.mode = MODE_NAV
+        self.btn_nav.setChecked(True)
+        if self.btn_edit.isChecked():
+            self.btn_edit.blockSignals(True)
+            self.btn_edit.setChecked(False)
+            self.btn_edit.blockSignals(False)
+        self._mode_hint.hide()
+        return list(self._edit_wps)
+
+    def _clear_edit_items(self) -> None:
+        sc = self.canvas.scene()
+        for it in self._edit_handles:
+            sc.removeItem(it)
+        self._edit_handles.clear()
+        self._edit_line.setPath(QPainterPath())
+
+    def _edit_redraw(self) -> None:
+        sc = self.canvas.scene()
+        self._clear_edit_items()
+        line = QPainterPath()
+        if self._edit_wps and getattr(self, '_edit_show_line', True):
+            line.moveTo(*self._edit_wps[0])
+            for x, y in self._edit_wps[1:]:
+                line.lineTo(x, y)
+        self._edit_line.setPath(line)
+        n = len(self._edit_wps)
+        dark = QColor('#0b1018')                  # number text — dark = readable
+        for i, (x, y) in enumerate(self._edit_wps):           # on the light map
+            is_start = (i == 0)
+            is_end = (i == n - 1 and n > 1)
+            col = QColor(theme.GOOD if is_start else
+                         theme.MARKER_FIRE if is_end else theme.ACCENT)
+            r = 0.13 if is_start else (0.115 if is_end else 0.10)
+            dot = QGraphicsPathItem()
+            dp = QPainterPath()
+            dp.addEllipse(QPointF(x, y), r, r)
+            dot.setPath(dp)
+            dot.setPen(QPen(dark, 0.022))         # dark outline → pops on the map
+            dot.setBrush(QBrush(col))
+            dot.setZValue(9.3)
+            sc.addItem(dot)
+            self._edit_handles.append(dot)
+            # bold number, fixed screen size, dark on the bright dot
+            lab = QGraphicsSimpleTextItem(str(i + 1))
+            lab.setFlag(lab.GraphicsItemFlag.ItemIgnoresTransformations)
+            lab.setFont(QFont('Segoe UI', 11, QFont.Black))
+            lab.setBrush(QBrush(dark))
+            lab.setPos(x, y + r * 0.5)
+            lab.setZValue(9.6)
+            sc.addItem(lab)
+            self._edit_handles.append(lab)
+            # START / END badge so the ends are unmistakable
+            if is_start or is_end:
+                tag = QGraphicsSimpleTextItem('START' if is_start else 'END')
+                tag.setFlag(tag.GraphicsItemFlag.ItemIgnoresTransformations)
+                tag.setFont(QFont('Segoe UI', 9, QFont.Bold))
+                tag.setBrush(QBrush(col))
+                tag.setPos(x + r + 0.04, y + r)
+                tag.setZValue(9.6)
+                sc.addItem(tag)
+                self._edit_handles.append(tag)
+
+    def _nearest_handle(self, x: float, y: float):
+        best, bd = None, EDIT_GRAB_M
+        for i, (wx, wy) in enumerate(self._edit_wps):
+            d = math.hypot(wx - x, wy - y)
+            if d < bd:
+                bd, best = d, i
+        return best
+
+    def _on_edit_press(self, x: float, y: float) -> None:
+        if self._editing:
+            self._drag_idx = self._nearest_handle(x, y)   # None → insert on release
+
+    def _on_edit_move(self, x: float, y: float) -> None:
+        if self._editing and self._drag_idx is not None:
+            self._edit_wps[self._drag_idx] = (x, y)
+            self._edit_redraw()
+
+    def _on_edit_release(self, x: float, y: float) -> None:
+        if not self._editing:
+            return
+        if self._drag_idx is not None:
+            self._edit_wps[self._drag_idx] = (x, y)
+            self._drag_idx = None
+        else:
+            self._insert_point(x, y)
+        self._edit_redraw()
+        self.pathEdited.emit(list(self._edit_wps))
+
+    def _on_edit_delete(self, x: float, y: float) -> None:
+        if not self._editing:
+            return
+        i = self._nearest_handle(x, y)
+        if i is not None and len(self._edit_wps) > 2:
+            del self._edit_wps[i]
+            self._edit_redraw()
+            self.pathEdited.emit(list(self._edit_wps))
+
+    def _insert_point(self, x: float, y: float) -> None:
+        if len(self._edit_wps) < 2:
+            self._edit_wps.append((x, y))
+            return
+        best_i, best_d = 0, float('inf')
+        for i in range(len(self._edit_wps) - 1):
+            d = _point_seg_dist(x, y, self._edit_wps[i], self._edit_wps[i + 1])
+            if d < best_d:
+                best_d, best_i = d, i
+        self._edit_wps.insert(best_i + 1, (x, y))
 
     def _draw_goal(self) -> None:
         if self._goal is None:

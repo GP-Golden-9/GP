@@ -52,6 +52,7 @@ class MissionExecutor(QObject):
         self._best_dist = float('inf')
         self._best_ang = float('inf')
         self._wp_progress_t = 0.0
+        self._paused = False
         self._timer = QTimer(self)
         self._timer.setInterval(TICK_MS)
         self._timer.timeout.connect(self._tick)
@@ -59,6 +60,31 @@ class MissionExecutor(QObject):
     @property
     def active(self) -> bool:
         return self._timer.isActive()
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    # ── manual ASSIST: nudge the robot mid-run without aborting ────────────
+    def pause(self) -> None:
+        """Suspend bias streaming + the no-progress clock so the operator can
+        hand-drive the robot (e.g. past a tricky spot) WITHOUT cancelling the
+        run. The waypoint list/index are kept; resume() picks up from the
+        robot's new pose."""
+        self._paused = True
+
+    def resume(self) -> None:
+        """Re-arm the active waypoint from wherever the robot is NOW — the
+        operator's nudge counts as progress, so the run doesn't instantly
+        time out."""
+        if not self.active or not self._paused:
+            return
+        self._paused = False
+        now = time.monotonic()
+        self._wp_started = now
+        self._best_dist = float('inf')
+        self._best_ang = float('inf')
+        self._wp_progress_t = now
 
     # ── lifecycle ─────────────────────────────────────────────────────────
     def start(self, robot_id: str, waypoints: list[tuple[float, float]],
@@ -82,6 +108,7 @@ class MissionExecutor(QObject):
         self._timeout = wp_timeout
         self._tol = tol
         self._skips = 0
+        self._paused = False
         self._timer.start()
         self.progress.emit(f'mission: {len(waypoints)} waypoint(s) → {robot_id}')
         self._advance()
@@ -91,6 +118,7 @@ class MissionExecutor(QObject):
             return
         self._timer.stop()
         self._wps = []
+        self._paused = False
         if not silent:
             self.missionFinished.emit(reason)
             self.progress.emit(f'mission {reason}')
@@ -120,6 +148,8 @@ class MissionExecutor(QObject):
         self.waypointActive.emit(self._idx + 1, len(self._wps), x, y)
 
     def _tick(self) -> None:
+        if self._paused:                 # operator is hand-driving — hold
+            return
         if self._pose is None:
             if time.monotonic() - self._wp_started > self._timeout:
                 self._timer.stop()

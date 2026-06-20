@@ -231,6 +231,12 @@ class MainWindow(QMainWindow):
         self.mission.biasComputed.connect(self._on_mission_bias)
         self._nav_goal: tuple[str, float, float] | None = None   # for replan
         self._nav_replans = 0
+        # manual-ASSIST auto-resume: nudging during a run pauses the mission;
+        # this fires once the operator stops driving and resumes it.
+        self._assist_timer = QTimer(self)
+        self._assist_timer.setSingleShot(True)
+        self._assist_timer.setInterval(1200)
+        self._assist_timer.timeout.connect(self._assist_resume)
         self.map.markerPlaced.connect(
             lambda x, y: self.map.add_marker('PIN', x, y, robot='operator',
                                              t_wall=time.strftime('%H:%M:%S')))
@@ -270,6 +276,11 @@ class MainWindow(QMainWindow):
         self.drawer.detections.locateRequested.connect(self.map.center_on)
         self.drawer.detections.clearRequested.connect(self.map.clear_markers)
         self.map.markersChanged.connect(self.drawer.detections.set_markers)
+        # EDIT PATH: operator-tweaked SCAN coverage skeleton (None = auto-generate)
+        self._edit_skeleton: list[tuple[float, float]] | None = None
+        self._scan_planned = False        # SCAN path shown, awaiting START
+        self.map.editModeRequested.connect(self._begin_path_edit)
+        self.map.pathEdited.connect(self._on_path_edited)
 
         # ── Master/Slave mission demo (pure dashboard simulation) ──
         # FIRE TEST: place a fire on the map, send Beta to navigate to it
@@ -295,7 +306,9 @@ class MainWindow(QMainWindow):
                                          Qt.RightDockWidgetArea, 'dockAutonomy')
         self.tabifyDockWidget(self._dock_ops, self._dock_autonomy)
         self._dock_autonomy.raise_()
-        self.fire_panel.scanRequested.connect(self._scan_area)
+        self.fire_panel.scanRequested.connect(self._scan_plan)
+        self.fire_panel.scanStartRequested.connect(self._scan_start)
+        self.fire_panel.scanCancelRequested.connect(self._scan_cancel)
         self.fire_panel.placeFireRequested.connect(self._arm_place_fire)
         self.fire_panel.goRequested.connect(self._fire_go)
         self.fire_panel.stopRequested.connect(self._fire_stop)
@@ -442,10 +455,36 @@ class MainWindow(QMainWindow):
         return self.cmd[self.active_id]
 
     def _drive(self, vx: float, wz: float) -> None:
-        if (vx or wz) and self.mission.active:    # operator takes over
+        # During an autonomous sequence (SCAN/FIRE) a manual nudge ASSISTS the
+        # robot instead of aborting: pause the mission, hand-drive, then it
+        # resumes from the new pose once the operator lets go. Outside a
+        # sequence, manual drive still takes over (cancels a plain goal run).
+        if self.mission.active and self._seq:
+            if vx or wz:                          # real input → pause + assist
+                if not self.mission.paused:
+                    self.mission.pause()
+                    self.fire_panel.set_status('MANUAL ASSIST - release to resume',
+                                               'warn')
+                    self.fire_panel.log_line('manual assist: nudging Beta '
+                                             '(run resumes when you let go)')
+                self._assist_timer.start()        # (re)arm the resume countdown
+            self._client().drive(vx, wz)
+            return
+        if (vx or wz) and self.mission.active:     # operator takes over
             self.mission.cancel('cancelled by manual drive')
             self.map.clear_path()
         self._client().drive(vx, wz)
+
+    def _assist_resume(self) -> None:
+        """Operator stopped nudging — stop the wheels and let the paused
+        sequence pick up from Beta's current pose."""
+        if not (self.mission.active and self.mission.paused and self._seq):
+            return
+        self._client().drive(0.0, 0.0)
+        self.mission.resume()
+        if self._seq_phase_label:
+            self.fire_panel.set_status(self._seq_phase_label, 'accent')
+        self.fire_panel.log_line('assist done - resuming the run')
 
     def _stop(self) -> None:
         self._client().drive(0.0, 0.0)
@@ -546,6 +585,21 @@ class MainWindow(QMainWindow):
                          soft_extra_m=prof.plan_soft_extra_m)
         dt_ms = (time.monotonic() - t0) * 1000
         if path is None:
+            # Drift-tolerant fallback for Beta (lidar-less): the map can't route
+            # — often because Beta's drifted pose reads as 'inside a wall' — but
+            # the robot CAN physically move. Head for the goal REACTIVELY: a
+            # straight bias the ultrasonic fuser follows (real walls still stop
+            # it). Progress-based timeout (skip_stuck off) so a TRUE wall stops
+            # it, but any real motion toward the goal keeps it going. Alpha
+            # (lidar, trustworthy pose) keeps the strict NO PATH.
+            if self.active_id == 'robot2':
+                self.map.set_goal(gx, gy)
+                self.map.set_path((pose.x, pose.y), [(gx, gy)])
+                self._log('no map route — heading for the goal REACTIVELY '
+                          '(ultrasonic dodge; a real wall still stops it)')
+                self.mission.start('robot2', [(gx, gy)], gains=prof.goto,
+                                   wp_timeout=15.0, tol=0.30)
+                return 'ok'
             return 'no_path'
         self.map.set_goal(*path[-1])
         self.map.set_path((pose.x, pose.y), path)
@@ -649,44 +703,124 @@ class MainWindow(QMainWindow):
         prof = self.app_cfg.profile('robot2')
         out: list[tuple[float, float]] = []
         cur = start
-        dropped = 0
+        direct = 0
         for gx, gy in pts:
             legs = plan_path(self._grid, res, ox, oy, cur, (gx, gy),
                              hard_radius_m=prof.plan_hard_radius_m,
                              soft_extra_m=prof.plan_soft_extra_m)
             if not legs:
-                dropped += 1
+                # Map can't route here (often Beta's drifted, lidar-less pose
+                # reads as 'in a wall' when it isn't). Don't DROP the node —
+                # head for it DIRECTLY; the ultrasonic fuser handles any real
+                # obstacle and a true wall just stops it at 25 cm.
+                out.append((gx, gy))
+                cur = (gx, gy)
+                direct += 1
                 continue
             out.extend(legs)
             cur = legs[-1]
-        return out, dropped
+        return out, direct
 
-    # ── SCAN: cover the mapped area, then return to base ──────────────────
-    def _scan_area(self) -> None:
-        pose = self._seq_ready()
-        if pose is None:
-            return
-        self._seq_home = (pose.x, pose.y)
+    def _coverage_skeleton(self, start) -> list:
+        """The default auto-generated coverage skeleton for the current map."""
         res, ox, oy = self._grid_meta
         prof = self.app_cfg.profile('robot2')
         half = (prof.footprint or {}).get('half_width_m', 0.10)
-        skeleton = coverage_path(self._grid, res, ox, oy,
-                                 lane_m=0.6,                # coarse sweeps (simple path)
-                                 clearance_m=half + 0.12,   # keep waypoints off walls
-                                 max_waypoints=14,          # cap complexity
-                                 start=(pose.x, pose.y))
+        return coverage_path(self._grid, res, ox, oy,
+                             lane_m=0.6,                # coarse sweeps (simple path)
+                             clearance_m=half + 0.12,   # keep waypoints off walls
+                             max_waypoints=14,          # cap complexity
+                             start=start)
+
+    # ── EDIT PATH: operator drags/adds/removes the suggested waypoints ────
+    def _begin_path_edit(self) -> None:
+        """EDIT PATH toggled on — hand the map a skeleton to edit. Uses the
+        operator's previous edit if any, else a fresh auto-coverage path."""
+        if self._grid is None:
+            self.statusBar().showMessage('No map yet — start Alpha mapping first', 5000)
+            self.map.btn_edit.setChecked(False)
+            return
+        pose = self._aligned_pose('robot2')
+        start = (pose.x, pose.y) if pose else None
+        skeleton = self._edit_skeleton or self._coverage_skeleton(start)
+        if not skeleton:
+            self.statusBar().showMessage('No free area to build a path', 5000)
+            self.map.btn_edit.setChecked(False)
+            return
+        self._edit_skeleton = list(skeleton)
+        self.map.begin_path_edit(skeleton)
+        self._log(f'EDIT PATH: {len(skeleton)} waypoints — drag/add/remove, '
+                  f'then SCAN AREA follows your path')
+
+    def _on_path_edited(self, waypoints: list) -> None:
+        self._edit_skeleton = [tuple(w) for w in waypoints] or None
+        # live A* preview of the safe route while the operator drags nodes
+        if self._scan_planned and self._edit_skeleton:
+            pose = self._aligned_pose('robot2')
+            if pose is not None:
+                path, _ = self._route_through(self._edit_skeleton,
+                                              (pose.x, pose.y))
+                self.map.set_reference_path(path)
+
+    # ── SCAN: PLAN (show path) → review/edit → START → return to base ──────
+    def _scan_route(self, pose):
+        """Build the routed SCAN path from the operator-edited skeleton (or a
+        fresh auto-coverage one). Returns (skeleton, path, direct) or None
+        (with a panel reason). ``direct`` = nodes the map couldn't route that
+        Beta will head for reactively (drift-tolerant)."""
+        skeleton = self._edit_skeleton or self._coverage_skeleton((pose.x, pose.y))
         if not skeleton:
             self.fire_panel.set_status('no free area to scan', 'warn')
-            return
-        # Plan A* between the coverage points so room-to-room transits go
-        # THROUGH doorways (the bias-follower can't thread a doorway on its own).
-        path, dropped = self._route_through(skeleton, (pose.x, pose.y))
+            return None
+        # A* between the coverage points so room-to-room transits go THROUGH
+        # doorways (the bias-follower can't thread a doorway on its own).
+        path, direct = self._route_through(skeleton, (pose.x, pose.y))
         if not path:
             self.fire_panel.set_status('no reachable area to scan', 'warn')
+            return None
+        return skeleton, path, direct
+
+    def _scan_plan(self) -> None:
+        """SCAN AREA = PLAN only: show the suggested path for review/edit. It
+        does NOT move — the operator confirms with START SCAN."""
+        pose = self._seq_ready()
+        if pose is None:
             return
+        built = self._scan_route(pose)
+        if built is None:
+            return
+        skeleton, path, dropped = built
+        self._edit_skeleton = list(skeleton)
+        self._scan_planned = True
+        # Show the editable NODES directly (drag/add/remove) + the dashed A*
+        # route they produce — no need to hunt for the EDIT PATH button.
+        self.map.begin_path_edit(skeleton, show_line=False)
+        self.map.set_reference_path(path)
+        self.fire_panel.set_scan_planned(True)
+        self.fire_panel.set_status('PATH READY - drag/add/remove nodes, then START',
+                                   'accent')
+        self.fire_panel.log_line(
+            f'SCAN planned: {len(skeleton)} nodes. Drag a node to move, click the '
+            f'map to add, right-click a node to remove, then press START SCAN.')
+
+    def _scan_start(self) -> None:
+        """START SCAN = arm + drive the planned (possibly edited) path."""
+        pose = self._seq_ready()
+        if pose is None:
+            return
+        if self.map.btn_edit.isChecked():            # leave edit mode before running
+            self.map.end_path_edit()
+        built = self._scan_route(pose)               # re-route in case it was edited
+        if built is None:
+            return
+        skeleton, path, direct = built
+        self._scan_planned = False
+        self.fire_panel.set_scan_planned(False)
+        self._seq_home = (pose.x, pose.y)
+        prof = self.app_cfg.profile('robot2')
         self._seq_arm()
         self._seq = 'scan_cover'
-        self.map.set_reference_path(path)           # persistent reference viz
+        self.map.set_reference_path(path)
         # Follow the routed path LOOSELY: skip a waypoint it can't reach in
         # 12 s (don't get trapped in a dead end), and accept 'close enough'.
         self.mission.start('robot2', path, gains=prof.goto,
@@ -694,8 +828,19 @@ class MainWindow(QMainWindow):
         self.fire_panel.set_running(True)
         self._seq_phase(f'SCANNING — {len(path)} waypoints')
         msg = f'SCAN: covering the area ({len(path)} waypoints'
-        msg += f', {dropped} unreachable skipped)' if dropped else ')'
+        msg += f', {direct} headed for reactively)' if direct else ')'
         self.fire_panel.log_line(msg)
+
+    def _scan_cancel(self) -> None:
+        """Discard the planned/edited path and clear the preview."""
+        self._scan_planned = False
+        self._edit_skeleton = None
+        if self.map.btn_edit.isChecked():
+            self.map.end_path_edit()
+        self.map.clear_reference_path()
+        self.fire_panel.set_scan_planned(False)
+        self.fire_panel.set_status('IDLE', 'idle')
+        self.fire_panel.log_line('SCAN plan cancelled')
 
     # ── FIRE: navigate to the fire → pump 5 s → return to start ───────────
     def _fire_go(self) -> None:

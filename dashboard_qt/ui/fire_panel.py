@@ -26,7 +26,9 @@ _KIND_COLOR = {
 
 
 class FirePanel(QWidget):
-    scanRequested = Signal()           # cover the mapped area + return to base
+    scanRequested = Signal()           # PLAN: build + show the suggested path
+    scanStartRequested = Signal()      # CONFIRM: arm + drive the planned path
+    scanCancelRequested = Signal()     # discard the planned/edited path
     placeFireRequested = Signal()      # arm: next map click drops the fire
     goRequested = Signal()             # navigate to fire -> pump 5s -> return
     stopRequested = Signal()           # stop + disarm
@@ -48,8 +50,8 @@ class FirePanel(QWidget):
         sub.setStyleSheet(f'color:{theme.MUTED}; font-size:11px;')
         root.addWidget(sub)
 
-        # ── SCAN: cover the area + return to base ──
-        self.btn_scan = QPushButton('SCAN AREA   (cover map, return to base)')
+        # ── SCAN: plan → review/edit → start → return to base ──
+        self.btn_scan = QPushButton('SCAN AREA   (show suggested path)')
         self.btn_scan.setFocusPolicy(Qt.NoFocus)
         self.btn_scan.setMinimumHeight(44)
         self.btn_scan.setStyleSheet(
@@ -57,6 +59,33 @@ class FirePanel(QWidget):
             'color:#06210f;')
         self.btn_scan.clicked.connect(self.scanRequested)
         root.addWidget(self.btn_scan)
+
+        # confirm row — shown only after a path is planned (review before moving)
+        self._scan_review = QLabel('Review the dashed path. Use EDIT PATH on the '
+                                   'map to drag/add/remove points, then START.')
+        self._scan_review.setWordWrap(True)
+        self._scan_review.setStyleSheet(f'color:{theme.ACCENT}; font-size:11px;')
+        self._scan_review.hide()
+        root.addWidget(self._scan_review)
+        self.scan_confirm = QWidget()
+        cl = QHBoxLayout(self.scan_confirm)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(10)
+        self.btn_scan_start = QPushButton('START SCAN')
+        self.btn_scan_start.setFocusPolicy(Qt.NoFocus)
+        self.btn_scan_start.setMinimumHeight(42)
+        self.btn_scan_start.setStyleSheet(
+            f'font-weight:800; font-size:13px; background:{theme.GOOD}; '
+            'color:#06210f;')
+        self.btn_scan_start.clicked.connect(self.scanStartRequested)
+        self.btn_scan_cancel = QPushButton('CANCEL')
+        self.btn_scan_cancel.setFocusPolicy(Qt.NoFocus)
+        self.btn_scan_cancel.setMinimumHeight(42)
+        self.btn_scan_cancel.clicked.connect(self.scanCancelRequested)
+        cl.addWidget(self.btn_scan_start, 2)
+        cl.addWidget(self.btn_scan_cancel, 1)
+        self.scan_confirm.hide()
+        root.addWidget(self.scan_confirm)
 
         sep = QLabel('-  or  -')
         sep.setAlignment(Qt.AlignCenter)
@@ -125,7 +154,16 @@ class FirePanel(QWidget):
                                     f'color:{theme.MARKER_FIRE}; font-weight:700;')
         self.btn_go.setEnabled(True)
 
+    def set_scan_planned(self, on: bool) -> None:
+        """Show the review/confirm row after a path is planned (before moving)."""
+        self._scan_review.setVisible(on)
+        self.scan_confirm.setVisible(on)
+        self.btn_scan.setText('RE-PLAN  (regenerate suggested path)' if on
+                              else 'SCAN AREA   (show suggested path)')
+
     def set_running(self, running: bool) -> None:
+        if running:
+            self.set_scan_planned(False)        # moving now — hide the confirm row
         self.btn_go.setEnabled(not running and 'not placed'
                                not in self.fire_lbl.text())
         self.btn_stop.setEnabled(running)

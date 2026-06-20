@@ -29,7 +29,11 @@ import numpy as np
 ROBOT_RADIUS_M = 0.16
 HARD_MARGIN_M = 0.04
 SOFT_RINGS = ((2, 6.0), (2, 2.0))      # (dilation steps, added cost) per ring
-SNAP_M = 0.45
+SNAP_M = 0.60                          # goal/start snap to nearest free cell
+START_FREE_M = 0.30                    # carve a free disc around the robot: it
+                                       # is physically there, so a lidar-less,
+                                       # drifted pose reading "inside a wall"
+                                       # must not block planning from its cell
 OCC_THRESHOLD = 50
 
 SQRT2 = math.sqrt(2.0)
@@ -157,9 +161,17 @@ def plan_path(grid: np.ndarray, res: float, ox: float, oy: float,
     Returns sparse waypoints (goal included, start excluded). Complexity is
     fine for arena-scale maps (≤ ~200×200 cells in a few tens of ms)."""
     blocked, soft = build_costmap(grid, res, hard_radius_m, soft_extra_m)
+    # Drift tolerance: free a small disc around the robot's own cell. Beta has
+    # no lidar, so its dead-reckoned pose drifts and can land inside a mapped
+    # wall while the robot is really in open space — without this the planner
+    # refuses to move (NO PATH) when the robot physically could.
+    sc = _to_cell(*start_xy, ox, oy, res, grid.shape)
+    if sc is not None:
+        rr = max(1, int(round(START_FREE_M / res)))
+        si, sj = sc
+        blocked[max(0, si - rr):si + rr + 1, max(0, sj - rr):sj + rr + 1] = False
     snap_cells = max(1, int(SNAP_M / res))
-    start = _snap_free(blocked, _to_cell(*start_xy, ox, oy, res, grid.shape),
-                       snap_cells)
+    start = _snap_free(blocked, sc, snap_cells)
     goal = _snap_free(blocked, _to_cell(*goal_xy, ox, oy, res, grid.shape),
                       snap_cells)
     if start is None or goal is None:
