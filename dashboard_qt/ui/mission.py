@@ -18,6 +18,8 @@ WP_TOLERANCE_M = 0.30          # intermediate waypoints; final = robot's own 0.1
 WP_TIMEOUT_S = 25.0            # no progress to the active waypoint → abort
 TICK_MS = 100                  # 10 Hz — also the heading-bias stream rate
 MAX_SKIPS = 4                  # consecutive unreachable waypoints → give up
+TURN_COMMIT_RAD = 1.40         # heading error past which we commit to spinning
+                               # round (≈80°) — keeps a turn-around decisive
 
 # Default goto gains (mirror config/robot2.yaml goto.*); overridden per robot
 # via start(..., gains=...).
@@ -53,6 +55,7 @@ class MissionExecutor(QObject):
         self._best_ang = float('inf')
         self._wp_progress_t = 0.0
         self._paused = False
+        self._turn_commit = 0          # decisive turn-around direction (+1/-1/0)
         self._timer = QTimer(self)
         self._timer.setInterval(TICK_MS)
         self._timer.timeout.connect(self._tick)
@@ -143,6 +146,7 @@ class MissionExecutor(QObject):
         self._wp_started = time.monotonic()
         self._best_dist = float('inf')          # progress tracking (see _tick)
         self._best_ang = float('inf')
+        self._turn_commit = 0
         self._wp_progress_t = self._wp_started
         self._send(x, y)
         self.waypointActive.emit(self._idx + 1, len(self._wps), x, y)
@@ -211,11 +215,25 @@ class MissionExecutor(QObject):
         same gains as the Pi goto used to run). The Pi fuses this attraction
         with ultrasonic repulsion — see robot2_local_nav.py."""
         g = self._gains
+        tol = g['angle_tolerance_rad']
         ang_err = math.atan2(gy - py, gx - px) - pth
         ang_err = math.atan2(math.sin(ang_err), math.cos(ang_err))
+        # Decisive TURN-AROUND: when the next waypoint is well behind, commit to
+        # ONE turn direction and hold it (full rate, no driving) until roughly
+        # facing the goal. Without this, a ~180° target sits near the +pi/-pi
+        # wrap and tiny pose noise flips the sign, so the robot rocks / inches
+        # back and forth instead of just spinning round to face it.
+        if self._turn_commit == 0:
+            if abs(ang_err) > TURN_COMMIT_RAD:
+                self._turn_commit = 1 if ang_err > 0.0 else -1
+        elif abs(ang_err) <= tol:
+            self._turn_commit = 0
         max_w = g['max_angular_rps']
+        if self._turn_commit != 0:
+            self.biasComputed.emit(0.0, self._turn_commit * max_w)
+            return
         wz = max(-max_w, min(max_w, g['kp_angle'] * ang_err))
-        if abs(ang_err) > g['angle_tolerance_rad']:
+        if abs(ang_err) > tol:
             vx = 0.0                       # face the waypoint before driving
         else:
             vx = min(g['max_linear_mps'], g['kp_distance'] * dist)

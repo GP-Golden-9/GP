@@ -703,23 +703,22 @@ class MainWindow(QMainWindow):
         prof = self.app_cfg.profile('robot2')
         out: list[tuple[float, float]] = []
         cur = start
-        direct = 0
+        dropped = 0
         for gx, gy in pts:
             legs = plan_path(self._grid, res, ox, oy, cur, (gx, gy),
                              hard_radius_m=prof.plan_hard_radius_m,
                              soft_extra_m=prof.plan_soft_extra_m)
             if not legs:
-                # Map can't route here (often Beta's drifted, lidar-less pose
-                # reads as 'in a wall' when it isn't). Don't DROP the node —
-                # head for it DIRECTLY; the ultrasonic fuser handles any real
-                # obstacle and a true wall just stops it at 25 cm.
-                out.append((gx, gy))
-                cur = (gx, gy)
-                direct += 1
+                # A* found NO route around the mapped obstacles to this node
+                # (it's walled off). DROP it — never connect with a straight
+                # line, which would drive THROUGH the wall. (Drift of the
+                # robot's OWN pose is handled inside plan_path, which frees a
+                # disc around where Beta is, so the first leg still plans.)
+                dropped += 1
                 continue
             out.extend(legs)
             cur = legs[-1]
-        return out, direct
+        return out, dropped
 
     def _coverage_skeleton(self, start) -> list:
         """The default auto-generated coverage skeleton for the current map."""
@@ -765,20 +764,20 @@ class MainWindow(QMainWindow):
     # ── SCAN: PLAN (show path) → review/edit → START → return to base ──────
     def _scan_route(self, pose):
         """Build the routed SCAN path from the operator-edited skeleton (or a
-        fresh auto-coverage one). Returns (skeleton, path, direct) or None
-        (with a panel reason). ``direct`` = nodes the map couldn't route that
-        Beta will head for reactively (drift-tolerant)."""
+        fresh auto-coverage one). Returns (skeleton, path, dropped) or None
+        (with a panel reason). ``dropped`` = walled-off nodes A* couldn't reach
+        (omitted, never connected through an obstacle)."""
         skeleton = self._edit_skeleton or self._coverage_skeleton((pose.x, pose.y))
         if not skeleton:
             self.fire_panel.set_status('no free area to scan', 'warn')
             return None
         # A* between the coverage points so room-to-room transits go THROUGH
         # doorways (the bias-follower can't thread a doorway on its own).
-        path, direct = self._route_through(skeleton, (pose.x, pose.y))
+        path, dropped = self._route_through(skeleton, (pose.x, pose.y))
         if not path:
             self.fire_panel.set_status('no reachable area to scan', 'warn')
             return None
-        return skeleton, path, direct
+        return skeleton, path, dropped
 
     def _scan_plan(self) -> None:
         """SCAN AREA = PLAN only: show the suggested path for review/edit. It
@@ -813,7 +812,7 @@ class MainWindow(QMainWindow):
         built = self._scan_route(pose)               # re-route in case it was edited
         if built is None:
             return
-        skeleton, path, direct = built
+        skeleton, path, dropped = built
         self._scan_planned = False
         self.fire_panel.set_scan_planned(False)
         self._seq_home = (pose.x, pose.y)
@@ -828,7 +827,7 @@ class MainWindow(QMainWindow):
         self.fire_panel.set_running(True)
         self._seq_phase(f'SCANNING — {len(path)} waypoints')
         msg = f'SCAN: covering the area ({len(path)} waypoints'
-        msg += f', {direct} headed for reactively)' if direct else ')'
+        msg += f', {dropped} walled-off node(s) dropped)' if dropped else ')'
         self.fire_panel.log_line(msg)
 
     def _scan_cancel(self) -> None:

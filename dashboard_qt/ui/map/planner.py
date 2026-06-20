@@ -28,7 +28,12 @@ import numpy as np
 
 ROBOT_RADIUS_M = 0.16
 HARD_MARGIN_M = 0.04
-SOFT_RINGS = ((2, 6.0), (2, 2.0))      # (dilation steps, added cost) per ring
+# Soft cost rings push the route toward the CENTRE of open space (wide,
+# obstacle-free corridors) instead of hugging walls — both safer for a
+# drift-prone, lidar-less robot and what the operator asked for. Each ring is
+# (dilation steps, extra traversal cost); more rings reaching further out with
+# a decaying cost makes A* strongly prefer the most-open path.
+SOFT_RINGS = ((2, 12.0), (2, 6.0), (2, 3.0), (3, 1.2))
 SNAP_M = 0.60                          # goal/start snap to nearest free cell
 START_FREE_M = 0.30                    # carve a free disc around the robot: it
                                        # is physically there, so a lidar-less,
