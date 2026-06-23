@@ -56,7 +56,7 @@ IPAddress DNS1     (192, 168, 1, 1);
                                       // don't chop the motor into a twitch)
 #define SENSOR_PERIOD_MS     250UL    // sensor + telemetry refresh
 #define WIFI_RETRY_MS        5000UL
-#define GAS_ALARM_THRESHOLD  3000     // raw ADC: gas present  (matches config)
+#define GAS_ALARM_THRESHOLD  2700     // raw ADC: buzzer + alarm fire above this
 #define GAS_CLEAR_THRESHOLD  2000     // raw ADC: hysteresis clear point
 #define GAS_ALARM_MIN_MS     10000UL  // alarm latches at least this long
 
@@ -68,7 +68,16 @@ int   gas_val = 0;
 float ax = 0, ay = 0;
 bool  mpu_ok = false;
 
+// Heading for the map pose (the robot has no encoders). The gyro Z (yaw rate)
+// is integrated HERE at ~50 Hz using the ESP's own clock — far steadier than
+// integrating over the laptop's 3 Hz jittery telemetry poll. The laptop reads
+// 'heading' and dead-reckons position from a fixed drive speed x time.
+float heading  = 0.0;        // radians, wrapped to [-pi, pi]
+float gyroBias = 0.0;        // learned zero-rate offset while stopped
+unsigned long lastHeading = 0;
+
 char  currentDir = 'S';
+int   speedLevel = 5;        // 0..9 motor speed, relayed to the Arduino as a digit
 unsigned long lastCmdTime = 0, lastSensor = 0, lastWifiAttempt = 0, bootMillis = 0;
 bool  alarmActive = false;
 unsigned long alarmSince = 0;
@@ -173,6 +182,7 @@ void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(TRIG_PIN, OUTPUT); pinMode(ECHO_PIN, INPUT);
   sendDir('S');
+  Serial2.write((char)('0' + speedLevel));   // tell the Arduino the initial speed
   chirp(2, 150);                        // boot beep
 
   Wire.begin(21, 22);                   // I2C: SDA 21, SCL 22
@@ -189,6 +199,8 @@ void setup() {
                ",\"g\":" + String(gas_val) +
                ",\"x\":" + String(ax, 2) +
                ",\"y\":" + String(ay, 2) +
+               ",\"h\":" + String(heading, 4) +          // IMU heading (rad) for the map
+               ",\"dir\":\"" + String(currentDir) + "\"" + // current drive direction
                ",\"a\":" + String(alarmActive ? 1 : 0) +
                ",\"rssi\":" + String(WiFi.RSSI()) +
                ",\"uptime\":" + String((millis() - bootMillis) / 1000) +
@@ -199,6 +211,15 @@ void setup() {
   server.on("/control", []() {
     String d = server.arg("dir");
     setDirection(d.length() ? d[0] : 'S');
+    server.send(200, "text/plain", "OK");
+  });
+
+  // Speed: the console sends v=0..1; map to a 0..9 level and relay the digit to
+  // the Arduino, which PWMs the motor enables to that duty.
+  server.on("/speed", []() {
+    float v = server.arg("v").toFloat();
+    speedLevel = constrain((int)round(v * 9.0), 0, 9);
+    Serial2.write((char)('0' + speedLevel));
     server.send(200, "text/plain", "OK");
   });
 
@@ -232,6 +253,29 @@ void loop() {
   // stays fed even between dashboard/phone command keepalives.
   static unsigned long lastRelay = 0;
   if (now - lastRelay > 200) { lastRelay = now; sendDir(currentDir); }
+  // Re-sync the speed level once a second so a reset Arduino recovers it.
+  static unsigned long lastSpd = 0;
+  if (now - lastSpd > 1000) { lastSpd = now; Serial2.write((char)('0' + speedLevel)); }
+
+  // 2b. HEADING from the IMU — integrate the gyro Z at ~50 Hz with the ESP's
+  //     own clock. Learn the zero-rate bias while stopped so idle drift stays
+  //     small. This 'heading' feeds the laptop's map dead-reckoning.
+  if (mpu_ok && now - lastHeading >= 20) {
+    float dt = (now - lastHeading) / 1000.0f;
+    lastHeading = now;
+    sensors_event_t a, g, t;
+    mpu.getEvent(&a, &g, &t);
+    ax = a.acceleration.x; ay = a.acceleration.y;     // tilt → telemetry x/y
+    float gz = g.gyro.z;                              // yaw rate, rad/s
+    // Learn the zero-rate bias ONLY when actually still (|gz| small). Gating on
+    // the command direction is unreliable on this board, and learning the bias
+    // mid-turn made the heading drift BACK to its start after a rotation. A
+    // real pivot is well above 0.1 rad/s, so this never learns during a turn.
+    if (fabs(gz) < 0.1f) gyroBias += 0.02f * (gz - gyroBias);
+    heading += (gz - gyroBias) * dt;
+    if (heading >  PI) heading -= 2.0f * PI;
+    else if (heading < -PI) heading += 2.0f * PI;
+  }
 
   // 3. Sensors + latched gas alarm
   if (now - lastSensor > SENSOR_PERIOD_MS) {
@@ -256,12 +300,6 @@ void loop() {
       alarmActive = false;
     }
     digitalWrite(BUZZER_PIN, (alarmActive && (now / 250) % 2) ? HIGH : LOW);
-
-    // IMU tilt (optional — telemetry x/y)
-    if (mpu_ok) {
-      sensors_event_t a, g, t;
-      mpu.getEvent(&a, &g, &t);
-      ax = a.acceleration.x; ay = a.acceleration.y;
-    }
+    // (IMU is read in the 50 Hz heading tick above — ax/ay/heading kept fresh)
   }
 }

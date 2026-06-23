@@ -20,5 +20,17 @@ zmq:
   video: 0
 
 gas:
-  alarm_threshold: 3000      # MQ-5 raw ADC — matches firmware (field-tuned)
+  alarm_threshold: 2700      # MQ-5 raw ADC — buzzer + alarm fire above this
   clear_threshold: 2000      # hysteresis; alarm also latches >= 10 s
+
+# Encoderless dead-reckoning for the MAP pose. Gamma has no wheel encoders, so
+# the laptop estimates position from HEADING (IMU gyro, integrated on the ESP32
+# and sent as telemetry 'h') + a fixed drive SPEED x TIME of running. Calibrate
+# fwd_speed_mps: drive Gamma forward for a measured time over a measured
+# distance (distance / seconds). Turns are pivot-in-place (no translation), so
+# only the IMU heading changes. Drift is inherent — re-align with SET POSE.
+odom:
+  fwd_speed_mps: 0.6         # straight-line speed at full drive — CALIBRATE:
+                             # drive 1 m, compare to the map marker, then
+                             # new = 0.6 * (real_m / shown_m)
+  reverse_speed_mps: 0.6     # usually the same; set separately if it differs

@@ -27,6 +27,7 @@ class RobotProfile:
     drive: Dict = field(default_factory=dict)   # wheel kinematics for laptop odom
     ultrasonic: Dict = field(default_factory=dict)   # front HC-SR04 config
     goto: Dict = field(default_factory=dict)    # goto gains for laptop heading bias
+    odom: Dict = field(default_factory=dict)    # encoderless dead-reckoning (Gamma)
 
     @property
     def is_esp32(self) -> bool:
@@ -146,6 +147,7 @@ def load_app_config(fleet_path: str | None = None) -> AppConfig:
             drive=rc.get('drive', {}),
             ultrasonic=rc.get('ultrasonic', {}),
             goto=rc.get('goto', {}),
+            odom=rc.get('odom', {}),
         ))
 
     d = fleet.get('dashboard', {})

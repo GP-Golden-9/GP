@@ -144,6 +144,8 @@ class MainWindow(QMainWindow):
                 link = Esp32Link(prof.host,
                                  poll_hz=prof.http.get('poll_hz', 2),
                                  timeout_s=prof.http.get('timeout_s', 1.0),
+                                 fwd_speed_mps=prof.odom.get('fwd_speed_mps', 0.15),
+                                 reverse_speed_mps=prof.odom.get('reverse_speed_mps'),
                                  run_id=self.run_id, parent=self)
                 link.telemetryReceived.connect(st.on_telemetry)
                 link.ackReceived.connect(partial(self._on_ack, prof.id))

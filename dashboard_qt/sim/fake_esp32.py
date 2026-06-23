@@ -19,6 +19,18 @@ from urllib.parse import parse_qs, urlparse
 
 T0 = time.monotonic()
 LAST_CMD = {'t': time.monotonic(), 'dir': 'S'}
+# Simulated IMU heading so Gamma's encoderless map dead-reckoning can be tested
+# with no hardware: L/R pivot the heading, F/B don't change it (tank drive).
+HEADING = {'th': 0.0, 't': time.monotonic()}
+SIM_TURN_RATE = 0.6      # rad/s pivot, matches a slow inspector
+
+
+def _active_dir() -> str:
+    """Direction the firmware would currently hold — cleared by its 1.8 s
+    command watchdog if the console stops streaming."""
+    if time.monotonic() - LAST_CMD['t'] > 1.8:
+        return 'S'
+    return LAST_CMD['dir']
 
 
 def telemetry() -> dict:
@@ -26,11 +38,22 @@ def telemetry() -> dict:
     gas = 750 + 140 * math.sin(t * 0.31) + random.uniform(-40, 40)
     if 35.0 <= t < 43.0:                     # scripted leak event
         gas = 3300 + random.uniform(-80, 80)
+    now = time.monotonic()
+    dt = now - HEADING['t']
+    HEADING['t'] = now
+    d = _active_dir()
+    if d == 'L':
+        HEADING['th'] += SIM_TURN_RATE * dt
+    elif d == 'R':
+        HEADING['th'] -= SIM_TURN_RATE * dt
+    HEADING['th'] = math.atan2(math.sin(HEADING['th']), math.cos(HEADING['th']))
     return {
         'd': round(60 + 35 * math.sin(t * 0.6), 1),
         'g': int(gas),
         'x': round(0.4 * math.sin(t * 0.8), 2),     # tilt, NOT position
         'y': round(0.3 * math.cos(t * 0.7), 2),
+        'h': round(HEADING['th'], 4),               # simulated IMU heading (rad)
+        'dir': d,                                   # active drive direction
         'a': 1 if gas > 3000 else 0,
         'rssi': int(-48 - 6 * abs(math.sin(t * 0.05))),
         'uptime': int(t),
