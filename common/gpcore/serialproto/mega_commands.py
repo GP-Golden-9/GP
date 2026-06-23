@@ -6,6 +6,7 @@ Letter map (v5 firmware — supersets v4; v4 silently ignores U/A/E/X):
   T<l>,<r>     tank drive (independent side PWM, signed)
   U1 / U0      water pump on/off            (NOT 'W' — that toggles the watchdog!)
   A<deg>       arm servo angle, clamped
+  N<n>         beep the buzzer n times (camera-detection alert)
   E / X        e-stop engage / release
 """
 
@@ -46,6 +47,11 @@ def pump(on: bool) -> str:
 
 def servo(deg: int) -> str:
     return f'A{max(SERVO_MIN_DEG, min(SERVO_MAX_DEG, int(deg)))}'
+
+
+def buzzer(n: int = 2) -> str:
+    """Beep the buzzer n times (clamped 1..9). Default 2 = 'bib bib'."""
+    return f'N{max(1, min(9, int(n)))}'
 
 
 def estop(engage: bool) -> str:

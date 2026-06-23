@@ -96,6 +96,7 @@ class MainWindow(QMainWindow):
         self._keys: set[int] = set()
         self._last_sb = 0.0
         self._last_marker: dict[str, float] = {}   # kind -> last projection t
+        self._last_buzz = 0.0      # last camera-detection buzzer beep (cooldown)
         # Spoken detection announcements (Windows SAPI; no-op if unavailable).
         # 4 s per-kind cooldown so a target in view isn't announced every frame.
         self.speaker = Speaker(cooldown_s=4.0)
@@ -238,6 +239,15 @@ class MainWindow(QMainWindow):
         self._assist_timer.setSingleShot(True)
         self._assist_timer.setInterval(1200)
         self._assist_timer.timeout.connect(self._assist_resume)
+        # HOLD-GOAL pin for Alpha: while an Alpha (robot1) sequence is PAUSED
+        # (assist nudge or MANUAL HOLD), robot1_goto would otherwise keep
+        # driving to the last waypoint. This timer re-pins its goal to Alpha's
+        # CURRENT pose at a few Hz, so it holds in place and tracks the
+        # operator's hand-driving — when they let go, Alpha stays put. Beta
+        # needs none of this (pausing simply stops its bias stream).
+        self._hold_timer = QTimer(self)
+        self._hold_timer.setInterval(250)
+        self._hold_timer.timeout.connect(self._hold_tick)
         # MANUAL HOLD: full operator takeover mid-mission (MANUAL button) — the
         # mission stays paused and the robot drives freely until AUTONOMOUS
         # resumes it (no auto-resume, unlike a quick assist nudge).
@@ -298,6 +308,9 @@ class MainWindow(QMainWindow):
         # | scan_return | fire_go | fire_pump | fire_return. _seq_home is the
         # base pose captured at the start of a sequence to return to.
         self._seq: str | None = None
+        # Which robot runs the active sequence: SCAN = robot2 (Beta detects),
+        # FIRE = robot1 (Alpha carries the pump + navigates with its lidar).
+        self._seq_robot: str = 'robot2'
         self._seq_home: tuple[float, float] | None = None
         self._seq_phase_label = ''        # steady-phase status (re-shown after a dodge)
         self._pump_timer = QTimer(self)
@@ -480,14 +493,17 @@ class MainWindow(QMainWindow):
             if self._manual_hold:                 # full takeover (MANUAL button)
                 if not self.mission.paused:
                     self.mission.pause()
+                    self._hold_begin()            # pin Alpha so it won't creep
                 self._client().drive(vx, wz)      # drive freely, no auto-resume
                 return
             if vx or wz:                          # real input → pause + assist
                 if not self.mission.paused:
                     self.mission.pause()
+                    self._hold_begin()            # pin Alpha while hand-driving
+                    who = 'Alpha' if self._seq_robot == 'robot1' else 'Beta'
                     self.fire_panel.set_status('MANUAL ASSIST - release to resume',
                                                'warn')
-                    self.fire_panel.log_line('manual assist: nudging Beta '
+                    self.fire_panel.log_line(f'manual assist: nudging {who} '
                                              '(run resumes when you let go)')
                 self._assist_timer.start()        # (re)arm the resume countdown
             self._client().drive(vx, wz)
@@ -499,20 +515,51 @@ class MainWindow(QMainWindow):
 
     def _assist_resume(self) -> None:
         """Operator stopped nudging — stop the wheels and let the paused
-        sequence pick up from Beta's current pose."""
+        sequence pick up from the robot's current pose."""
         if not (self.mission.active and self.mission.paused and self._seq):
             return
         self._client().drive(0.0, 0.0)
+        self._hold_resume()
         self.mission.resume()
         if self._seq_phase_label:
             self.fire_panel.set_status(self._seq_phase_label, 'accent')
         self.fire_panel.log_line('assist done - resuming the run')
+
+    # ── Alpha hold-goal pin (keeps robot1_goto from creeping while paused) ──
+    def _hold_begin(self) -> None:
+        """Pin Alpha in place while a sequence is paused. No-op for Beta."""
+        if self._seq_robot == 'robot1':
+            self._hold_tick()                 # pin immediately, don't wait 250 ms
+            self._hold_timer.start()
+
+    def _hold_tick(self) -> None:
+        if not (self.mission.active and self.mission.paused
+                and self._seq and self._seq_robot == 'robot1'):
+            self._hold_timer.stop()
+            return
+        pose = self._aligned_pose('robot1')
+        if pose is not None and 'robot1' in self.cmd:
+            rx, ry = world_point_to_robot(pose.x, pose.y, self._offsets['robot1'])
+            self.cmd['robot1'].send(cmds.CMD_GOAL,
+                                    {'x': round(rx, 3), 'y': round(ry, 3)})
+
+    def _hold_resume(self) -> None:
+        """Stop pinning and re-issue the active waypoint so Alpha drives on."""
+        self._hold_timer.stop()
+        if self._seq_robot != 'robot1':
+            return
+        wp = self.mission.active_waypoint()
+        if wp is not None and 'robot1' in self.cmd:
+            rx, ry = world_point_to_robot(wp[0], wp[1], self._offsets['robot1'])
+            self.cmd['robot1'].send(cmds.CMD_GOAL,
+                                    {'x': round(rx, 3), 'y': round(ry, 3)})
 
     def _stop(self) -> None:
         self._client().drive(0.0, 0.0)
 
     def _estop(self, engage: bool) -> None:
         if engage:
+            self._hold_timer.stop()
             self.mission.cancel('cancelled by e-stop')
         self._client().estop(engage)
         self._log(f'E-STOP {"ENGAGED" if engage else "released"} → {self.active_id}')
@@ -536,6 +583,7 @@ class MainWindow(QMainWindow):
                 self.mission.pause()
                 self._seq_disarm()              # stop autonomy so it won't wander
                 self._stop()
+                self._hold_begin()              # pin Alpha (no creep to waypoint)
                 self.fire_panel.set_status('MANUAL HOLD - drive freely; '
                                            'AUTONOMOUS resumes', 'warn')
                 self.mission_panel.log_line('operator took MANUAL control '
@@ -545,6 +593,7 @@ class MainWindow(QMainWindow):
                 self._manual_hold = False
                 self._stop()
                 self._seq_arm()                 # re-arm autonomy
+                self._hold_resume()             # re-issue the active waypoint
                 self.mission.resume()
                 if self._seq_phase_label:
                     self.fire_panel.set_status(self._seq_phase_label, 'accent')
@@ -705,36 +754,55 @@ class MainWindow(QMainWindow):
 
     # ── shared sequence helpers ───────────────────────────────────────────
     def _seq_ready(self):
-        """Common preflight for an autonomous sequence. Returns Beta's aligned
-        pose, or None (with a panel reason) if the map/alignment isn't ready."""
-        pose = self._aligned_pose('robot2')
+        """Common preflight for an autonomous sequence (on ``self._seq_robot``).
+        Returns the robot's aligned pose, or None (with a panel reason) if the
+        map/alignment isn't ready. Beta (lidar-less) must be SET-POSE aligned;
+        Alpha is the SLAM frame itself, so it's always aligned."""
+        rid = self._seq_robot
+        pose = self._aligned_pose(rid)
         if self._grid is None:
             self.fire_panel.set_status('NO MAP - start Alpha mapping', 'bad')
             return None
-        if pose is None or not self._aligned.get('robot2'):
-            self.fire_panel.set_status('SET POSE Beta on the map first', 'bad')
-            self.fire_panel.log_line('Beta must be aligned (SET POSE) for map nav')
+        if pose is None or (rid == 'robot2' and not self._aligned.get('robot2')):
+            who = 'Beta' if rid == 'robot2' else 'Alpha'
+            self.fire_panel.set_status(f'SET POSE {who} on the map first', 'bad')
+            self.fire_panel.log_line(f'{who} must be aligned (SET POSE) for map nav')
             return None
-        if self.active_id != 'robot2':
-            self._switch_robot('robot2')
-        return self._aligned_pose('robot2')
+        if self.active_id != rid:
+            self._switch_robot(rid)
+        return self._aligned_pose(rid)
 
     def _seq_arm(self) -> None:
-        self._auto_robot = 'robot2'                 # arm autonomy + heartbeat
-        self.cmd['robot2'].send(cmds.CMD_EXPLORE, {'enable': True})
+        rid = self._seq_robot
+        if rid == 'robot2':
+            self._auto_robot = 'robot2'             # arm autonomy + heartbeat
+            self.cmd['robot2'].send(cmds.CMD_EXPLORE, {'enable': True})
+        else:
+            # Alpha drives via CMD_GOAL (robot1_goto + lidar) — no wander, no
+            # bias stream. Disable its explorer so the goto owns /cmd_vel, and
+            # don't run the explore heartbeat (it would re-enable wandering).
+            self._auto_robot = None
+            if rid in self.cmd:
+                self.cmd[rid].send(cmds.CMD_EXPLORE, {'enable': False})
 
     def _seq_disarm(self) -> None:
+        rid = self._seq_robot
         self._auto_robot = None
         self._nav_goal = None
-        if 'robot2' in self.cmd:
+        if rid not in self.cmd:
+            return
+        if rid == 'robot2':
             self.cmd['robot2'].send(cmds.CMD_EXPLORE, {'enable': False})
             self.cmd['robot2'].send(cmds.CMD_NAV_BIAS, {'vx': 0.0, 'wz': 0.0})
+        else:
+            # Hold Alpha where it is (robot1_goto has already stopped at goal).
+            self.cmd[rid].send(cmds.CMD_DRIVE, {'vx': 0.0, 'wz': 0.0})
 
     def _seq_drive_to(self, x: float, y: float) -> bool:
         """Plan + run a single-goal leg; arms replan-on-stuck. False on no path."""
         if self._plan_and_run(x, y) != 'ok':
             return False
-        self._nav_goal = ('robot2', x, y)
+        self._nav_goal = (self._seq_robot, x, y)
         self._nav_replans = 0
         return True
 
@@ -742,6 +810,7 @@ class MainWindow(QMainWindow):
         self._seq = None
         self._seq_phase_label = ''
         self._manual_hold = False
+        self._hold_timer.stop()
         self._seq_disarm()
         self.map.clear_path()
         self.map.clear_reference_path()
@@ -847,6 +916,7 @@ class MainWindow(QMainWindow):
     def _scan_plan(self) -> None:
         """SCAN AREA = PLAN only: show the suggested path for review/edit. It
         does NOT move — the operator confirms with START SCAN."""
+        self._seq_robot = 'robot2'                  # Beta scans + detects
         pose = self._seq_ready()
         if pose is None:
             return
@@ -869,6 +939,7 @@ class MainWindow(QMainWindow):
 
     def _scan_start(self) -> None:
         """START SCAN = arm + drive the planned (possibly edited) path."""
+        self._seq_robot = 'robot2'                  # Beta scans + detects
         pose = self._seq_ready()
         if pose is None:
             return
@@ -954,31 +1025,32 @@ class MainWindow(QMainWindow):
             if self._fire_xy is None:
                 self.mission_panel.log_line('place the FIRE on the map first.')
                 return
-            self.mission_panel.log_line('robot1 sent an action to robot2 to go to '
-                                        'the fire and extinguish it.')
+            self.mission_panel.log_line('robot2 reported the fire; robot1 (Alpha) '
+                                        'moves in to extinguish it with its pump.')
             self._fire_go()
-            self._mstep('fire', 'robot2: en route -> pump 5 s -> return...',
-                        'Beta on fire mission...', enabled=False)
+            self._mstep('fire', 'robot1 (Alpha): en route -> pump 10 s -> return...',
+                        'Alpha on fire mission...', enabled=False)
         elif p == 'done':
             self._mission_reset()
 
     def _mission_enter_ask_fire(self) -> None:
-        self.mission_panel.log_line('robot1 wants to send robot2 to the fire to extinguish it.')
+        self.mission_panel.log_line('robot2 detected the fire; robot1 (Alpha) will '
+                                    'move in to extinguish it.')
         if self._fire_xy is None:
             self._arm_place_fire()
             self._mstep('ask_fire',
                         'Click the map (inside the arena) to place the FIRE, then confirm.',
                         'place the fire on the map...', enabled=False)
         else:
-            self._mstep('ask_fire', 'Fire is placed. Confirm to send robot2.',
-                        'CONFIRM - send Beta to fire')
+            self._mstep('ask_fire', 'Fire is placed. Confirm to send Alpha.',
+                        'CONFIRM - send Alpha to fire')
 
     def _mission_on_fire_placed(self) -> None:
         if self._mission_phase == 'ask_fire':
             self.mission_panel.log_line('fire placed inside the map.')
             self._mstep('ask_fire',
-                        'Fire placed. Confirm to send robot2 to extinguish it.',
-                        'CONFIRM - send Beta to fire')
+                        'Fire placed. Confirm to send Alpha to extinguish it.',
+                        'CONFIRM - send Alpha to fire')
 
     def _mission_on_seq_finish(self, label: str, kind: str) -> None:
         """Hook from _seq_finish — advances the mission when a SCAN/FIRE leg
@@ -993,13 +1065,13 @@ class MainWindow(QMainWindow):
                             'RETRY SCAN', kind='warn')
         elif self._mission_phase == 'fire':
             if kind == 'good':
-                self.mission_panel.log_line('robot2: fire extinguished, returned to start.')
-                self._mstep('done', 'MISSION COMPLETE - robot2 scanned, extinguished '
-                            'the fire, and returned.', 'RESTART MISSION', kind='good')
+                self.mission_panel.log_line('robot1 (Alpha): fire extinguished, returned to start.')
+                self._mstep('done', 'MISSION COMPLETE - Beta scanned & detected, Alpha '
+                            'extinguished the fire and returned.', 'RESTART MISSION', kind='good')
             else:
-                self.mission_panel.log_line(f'robot2 fire run stopped ({label}).')
+                self.mission_panel.log_line(f'robot1 (Alpha) fire run stopped ({label}).')
                 self._mstep('ask_fire', 'Fire run stopped. Confirm to retry, or ABORT.',
-                            'CONFIRM - send Beta to fire', kind='warn')
+                            'CONFIRM - send Alpha to fire', kind='warn')
 
     def _mission_step_done(self) -> None:
         """Operator override: force-complete the CURRENT step and advance —
@@ -1048,8 +1120,9 @@ class MainWindow(QMainWindow):
         self._mstep('idle', 'Press START MISSION to run the Alpha->Beta demo.',
                     'START MISSION', kind='accent')
 
-    # ── FIRE: navigate to the fire → pump 5 s → return to start ───────────
+    # ── FIRE (Alpha): navigate to the fire → pump 10 s → return to start ──
     def _fire_go(self) -> None:
+        self._seq_robot = 'robot1'                  # Alpha carries the pump now
         if self._fire_xy is None:
             self.fire_panel.set_status('place a fire first', 'warn')
             return
@@ -1072,13 +1145,14 @@ class MainWindow(QMainWindow):
 
     def _fire_stop(self) -> None:
         self._pump_timer.stop()
+        self._hold_timer.stop()
         self.mission.cancel('stopped by operator', silent=True)
         self._seq = None
         self._seq_phase_label = ''
         self._manual_hold = False
         self._seq_disarm()
-        if 'robot2' in self.cmd:
-            self.cmd['robot2'].send(cmds.CMD_PUMP, {'on': False})
+        if self._seq_robot in self.cmd:
+            self.cmd[self._seq_robot].send(cmds.CMD_PUMP, {'on': False})
         self.map.clear_path()
         self.map.clear_reference_path()
         self.fire_panel.set_running(False)
@@ -1087,8 +1161,8 @@ class MainWindow(QMainWindow):
     def _pump_done(self) -> None:
         if self._seq != 'fire_pump':
             return
-        if 'robot2' in self.cmd:
-            self.cmd['robot2'].send(cmds.CMD_PUMP, {'on': False})
+        if self._seq_robot in self.cmd:
+            self.cmd[self._seq_robot].send(cmds.CMD_PUMP, {'on': False})
         self.fire_panel.log_line('FIRE: pump OFF - returning to start')
         self._seq = 'fire_return'
         self._seq_arm()                             # re-arm for the return drive
@@ -1140,11 +1214,11 @@ class MainWindow(QMainWindow):
         elif self._seq == 'fire_go':
             self._seq = 'fire_pump'
             self._seq_disarm()                      # HOLD at the fire (no wander)
-            self.fire_panel.set_status('PUMP ON - 5 s', 'good')
-            self.fire_panel.log_line('FIRE: arrived - pump ON for 5 s')
-            if 'robot2' in self.cmd:
-                self.cmd['robot2'].send(cmds.CMD_PUMP, {'on': True})
-            self._pump_timer.start(5000)            # firmware also hard-caps 5 s
+            self.fire_panel.set_status('PUMP ON - 10 s', 'good')
+            self.fire_panel.log_line('FIRE: arrived - pump ON for 10 s')
+            if self._seq_robot in self.cmd:
+                self.cmd[self._seq_robot].send(cmds.CMD_PUMP, {'on': True})
+            self._pump_timer.start(10000)           # firmware also hard-caps 10 s
         elif self._seq == 'fire_return':
             self._seq_finish('FIRE DONE — back at start', 'good')
 
@@ -1206,7 +1280,8 @@ class MainWindow(QMainWindow):
     def _update_ops_target(self) -> None:
         prof = self.app_cfg.profile(self.active_id)
         self.ops.set_target(prof.name, prof.id,
-                            has_tools=(prof.id == 'robot2'),
+                            has_pump=(prof.id == 'robot1'),   # Alpha carries the pump
+                            has_servo=(prof.id == 'robot2'),  # Beta keeps the arm servo
                             has_gas=prof.is_esp32,
                             has_ultra=bool(prof.ultrasonic.get('enabled')))
 
@@ -1458,6 +1533,12 @@ class MainWindow(QMainWindow):
             if kind not in best or conf > best[kind][0]:
                 best[kind] = (conf, float(d.get('cx', 0.5)),
                               float(d.get('h', 0.3)))
+        # Camera detection → beep Beta's buzzer twice ("bib bib"). Buzzer lives
+        # on Beta's Mega (pin 34); send regardless of the active robot. Cooldown
+        # so a target sitting in view doesn't beep every frame.
+        if best and now - self._last_buzz > 3.0 and 'robot2' in self.cmd:
+            self._last_buzz = now
+            self.cmd['robot2'].send(cmds.CMD_BUZZER, {'n': 2})
         for kind, (conf, cx, h) in best.items():
             if now - self._last_marker.get(kind, 0.0) < 0.5:
                 continue

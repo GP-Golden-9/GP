@@ -30,14 +30,16 @@ CMD_NAV_BIAS = 'cmd.nav_bias'  # {vx: float, wz: float} — laptop heading bias
 CMD_SPEED   = 'cmd.speed'    # {value: float 0..1}
 CMD_PING    = 'cmd.ping'     # {} — link liveness check
 CMD_RESET_MAP = 'cmd.reset_map'  # {} — restart SLAM to clear map
+CMD_BUZZER  = 'cmd.buzzer'   # {n: int} — beep Beta's buzzer n times (camera
+                             # detection alert; firmware does it non-blocking)
 
 ALL_COMMANDS = frozenset({
     CMD_DRIVE, CMD_ESTOP, CMD_PUMP, CMD_SERVO, CMD_EXPLORE, CMD_GOAL,
-    CMD_NAV_BIAS, CMD_SPEED, CMD_PING, CMD_RESET_MAP,
+    CMD_NAV_BIAS, CMD_SPEED, CMD_PING, CMD_RESET_MAP, CMD_BUZZER,
 })
 
 # Commands that must execute exactly once (retries must be deduped):
-EXACTLY_ONCE = frozenset({CMD_PUMP, CMD_SERVO, CMD_GOAL, CMD_RESET_MAP})
+EXACTLY_ONCE = frozenset({CMD_PUMP, CMD_SERVO, CMD_GOAL, CMD_RESET_MAP, CMD_BUZZER})
 
 ACK_TIMEOUT_S = 0.30
 ACK_RETRIES = 2

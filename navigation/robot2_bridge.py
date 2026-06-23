@@ -819,7 +819,6 @@ class Robot2Bridge(Node):
             self.estop = True
             self._send('S')           # works on v4 firmware
             self._send('E')           # hard-brake + latch on v5 firmware (ignored by v4)
-            self._send('U0')          # pump off on v5 firmware (ignored by v4)
             self.get_logger().warn('EMERGENCY STOP ENGAGED')
         else:
             self.estop = False
@@ -827,12 +826,19 @@ class Robot2Bridge(Node):
             self.get_logger().info('Emergency stop released')
 
     def _accessory_cb(self, msg: String):
-        """Forward pump/servo commands (v5 firmware): 'U1', 'U0', 'A<deg>'."""
+        """Forward arm-servo ('A<deg>') and buzzer ('N<n>') commands. The pump
+        was relocated to Alpha (robot1) on 2026-06-23, so 'U' is no longer sent
+        here; reject it defensively."""
         cmd = msg.data.strip()
-        if self.estop and cmd != 'U0':
+        if not cmd:
+            return
+        if cmd[0] == 'N':                 # buzzer beep — non-actuating, OK on e-stop
+            self._send(cmd)
+            return
+        if self.estop:
             self.get_logger().warn(f'Accessory cmd {cmd!r} blocked by e-stop')
             return
-        if not cmd or cmd[0] not in ('U', 'A'):
+        if cmd[0] != 'A':
             self.get_logger().warn(f'Unknown accessory cmd: {cmd!r}')
             return
         self._send(cmd)

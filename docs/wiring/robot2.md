@@ -9,16 +9,14 @@
 
 ```
 12 V battery ─[master switch]─[10 A fuse]─┬─→ L298N VS (4 motors, paired)
-                                          ├─→ relay COM ──(NO)── pump + ─ pump − → GND
-                                          ├─→ LM2596S #1 ─[5.10 V]─→ Pi 3B+ (GPIO 5V) + relay module VCC
+                                          ├─→ LM2596S #1 ─[5.10 V]─→ Pi 3B+ (GPIO 5V)
                                           │                          └─ LED voltmeter
                                           └─→ LM2596S #2 / BEC ─[5.5–6.0 V]─→ servo + (470–1000 µF across it)
 Pi USB ──→ Mega (power + serial, /dev/mega)        Pi USB ──→ camera
 GND: ALL of the above to battery −  (servo GND must also reach Mega GND)
 ```
 
-⚠ **Pump load NEVER through the 5 V rail** — relay contacts switch
-battery-direct 12 V. The relay **coil** (module VCC/IN) is 5 V.
+(Pump + relay moved to Alpha 2026-06-23 — see `docs/wiring/robot1.md`.)
 ⚠ **Servo on its own buck/BEC** — a stalling servo on the Pi's rail caused
 brown-outs in bench tests (see docs/bench_robot2_v5.md §0).
 
@@ -62,14 +60,20 @@ Boot banner must show `MPU6050 OK`, magnetometer `OK (HMC…/QMC…)`,
 
 ## 5. Intervention tools (firmware v5)
 
+> **2026-06-23: the WATER PUMP + relay were RELOCATED to Alpha (robot1).** Beta
+> keeps only the arm servo. Remove Beta's relay + pump and the D7 signal wire;
+> see `docs/wiring/robot1.md` §2b for the pump's new home. The `U1/U0` command
+> is gone from Beta's firmware.
+
 | Item | Mega pin | Wiring |
 |---|---|---|
-| Relay module IN | **D7** | plus VCC→5 V, GND→GND. Module jumper = **L-trigger** (matches `RELAY_ACTIVE_LOW 1`; if your module is H-trigger, set the define to 0 and reflash) |
-| Pump | — | battery +12 V → relay COM; relay **NO** → pump +; pump − → GND. NO (not NC!) so the pump is OFF when anything fails |
 | Servo signal | **D5** | servo + → 6 V buck (§1), servo − → common GND |
+| Buzzer | **D34** | buzzer **+** → D34, buzzer **−** → common GND (active buzzer module, HIGH = sound) |
 
-Firmware safety already on top: 5 s max pump run, 1 s cooldown, pump off on
-watchdog/e-stop/boot; servo clamped 10–170°, slew-limited.
+Firmware safety: servo clamped 10–170°, slew-limited. Buzzer beeps on a camera
+detection (the console sends `N<n>`; firmware beeps non-blocking, default twice).
+If your buzzer is **passive** (needs a tone, not just DC), drive it with
+`tone()/noTone()` in `buzzerTick()` instead of `digitalWrite`.
 Complete `docs/bench_robot2_v5.md` before first powered test.
 
 ## 6. Front ultrasonics (HC-SR04 ×2, firmware v5)

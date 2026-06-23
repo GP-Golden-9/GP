@@ -31,6 +31,13 @@ def test_servo_clamped_to_safe_range():
     assert mc.servo(95) == 'A95'
 
 
+def test_buzzer_uses_N_and_clamps():
+    assert mc.buzzer() == 'N2'          # default = bib bib
+    assert mc.buzzer(3) == 'N3'
+    assert mc.buzzer(0) == 'N1'         # clamps to >=1
+    assert mc.buzzer(99) == 'N9'        # clamps to <=9
+
+
 def test_estop_letters_match_firmware():
     assert mc.estop(True) == 'E'
     assert mc.estop(False) == 'X'

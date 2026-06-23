@@ -63,3 +63,14 @@ goto:
   rotate_clear_m: 0.36       # rear-corner sweep 0.335 + margin (rear half
                              # only — the front never reaches past 0.18)
   blocked_abort_s: 6.0       # obstacle persists this long -> goal aborted
+
+# Water pump (relocated from Beta 2026-06-23). Alpha runs the go-to-fire ->
+# pump 10 s -> return action; it has lidar so it navigates there far better
+# than the lidar-less Beta. Firmware defines mirror these (robot1_controller).
+accessories:
+  pump:
+    pin: 34              # firmware v3.1 (free pin; motors use 4-7 + 22-29)
+    active_low: false    # this module is active-HIGH (ran the pump at boot when
+                         # set active-low); mirror RELAY_ACTIVE_LOW in the .ino
+    max_run_ms: 10000    # firmware-enforced auto-off (the fire action = 10 s)
+    cooldown_ms: 1000

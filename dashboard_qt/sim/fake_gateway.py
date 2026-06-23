@@ -361,6 +361,10 @@ def main() -> int:
         robot.servo = max(10, min(170, int(env.payload.get('deg', 90))))
         return True, f'SERVO={robot.servo}'
 
+    def h_buzzer(env):
+        n = max(1, min(9, int(env.payload.get('n', 2))))
+        return True, f'BUZZ={n}'
+
     def h_explore(env):
         robot.exploring = bool(env.payload.get('enable'))
         return True, 'ok'
@@ -390,6 +394,7 @@ def main() -> int:
     server.set_handler(cmds.CMD_ESTOP, h_estop)
     server.set_handler(cmds.CMD_PUMP, h_pump)
     server.set_handler(cmds.CMD_SERVO, h_servo)
+    server.set_handler(cmds.CMD_BUZZER, h_buzzer)
     server.set_handler(cmds.CMD_EXPLORE, h_explore)
     server.set_handler(cmds.CMD_GOAL, h_goal)
     server.set_handler(cmds.CMD_NAV_BIAS, h_nav_bias)

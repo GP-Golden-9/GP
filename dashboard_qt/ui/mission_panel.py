@@ -6,8 +6,8 @@ robot-to-robot link). One context button walks the operator through the steps:
 
     START → Alpha maps → (operator: MAPPING DONE) → Alpha asks to send Beta to
     scan → (operator: CONFIRM) → suggested path shown for review/edit →
-    (operator: START SCAN) → Beta scans + returns → Alpha asks to send Beta to
-    the fire → (operator: place fire + CONFIRM) → Beta drives → pump 5 s →
+    (operator: START SCAN) → Beta scans + detects + returns → Alpha moves in to
+    the fire → (operator: place fire + CONFIRM) → Alpha drives → pump 10 s →
     returns → done.
 
 ABORT stops everything at any step. The actual driving reuses the AUTONOMY

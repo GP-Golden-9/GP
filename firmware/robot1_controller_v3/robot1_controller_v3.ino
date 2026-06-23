@@ -15,7 +15,14 @@
  *     real on robot1 too.
  *   · Consistent OK:/ERR: replies for every command (machine-parseable).
  *
- * Commands: F B L R S · E/X e-stop · P<80-255> speed · ?  status
+ * v3.1 (2026-06-23): WATER PUMP relocated from Beta to Alpha. Alpha now
+ *   carries the 1-ch relay + pump and runs the "go to fire -> pump -> return"
+ *   action (it has lidar, so it navigates far better than Beta). Same U1/U0
+ *   wire protocol Beta's v5 firmware used, so the gateway/bridge are unchanged.
+ *   10 s hard auto-off (even if the Pi/console dies mid-spray), 1 s cooldown,
+ *   forced OFF by e-stop and at boot.
+ *
+ * Commands: F B L R S · E/X e-stop · P<80-255> speed · U1/U0 pump · ? status
  * Status reply: STS:<IDLE|MOVING|ESTOP>,SPD:<current>
  */
 
@@ -24,6 +31,16 @@ const int RL_PWM = 4,  RL_IN1 = 22, RL_IN2 = 23;
 const int RR_PWM = 5,  RR_IN1 = 24, RR_IN2 = 25;
 const int FR_PWM = 6,  FR_IN1 = 27, FR_IN2 = 26;
 const int FL_PWM = 7,  FL_IN1 = 29, FL_IN2 = 28;
+
+// ── Water pump (v3.1) — 1-ch relay module on a free digital pin ─────────
+#define PUMP_RELAY_PIN     34    // free pin (motors use 4-7 + 22-29)
+#define RELAY_ACTIVE_LOW   0     // trigger polarity: 0 = HIGH switches pump ON,
+                                 // 1 = LOW switches it ON. Set to 0 because the
+                                 // module ran the pump at boot with 1 (active-HIGH
+                                 // board). If it now runs at boot with 0, your
+                                 // module is active-LOW — set this back to 1.
+#define PUMP_MAX_RUN_MS    10000UL  // hard auto-off (the fire action pumps 10 s)
+#define PUMP_COOLDOWN_MS   1000UL   // minimum off-time between runs
 
 // ── Tuning ──────────────────────────────────────────────────────────────
 const int DEFAULT_SPEED = 180;
@@ -40,6 +57,11 @@ char currentCommand = 'S';
 bool emergencyStop = false;
 unsigned long lastCommandTime = 0;
 
+// ── Pump state (v3.1) ───────────────────────────────────────────────────
+bool pumpOn = false;
+unsigned long pumpOnSince = 0;
+unsigned long pumpCooldownUntil = 0;
+
 void setup() {
     Serial.begin(115200);
 
@@ -48,7 +70,18 @@ void setup() {
     for (int i = 0; i < 12; i++) pinMode(pins[i], OUTPUT);
 
     stopAllMotors();
-    Serial.println(F("ROBOT1 CONTROLLER v3.0"));
+
+    // Pump relay: preload the OFF level BEFORE the pin becomes an OUTPUT so an
+    // active-low relay never glitches ON during boot.
+#if RELAY_ACTIVE_LOW
+    digitalWrite(PUMP_RELAY_PIN, HIGH);
+#else
+    digitalWrite(PUMP_RELAY_PIN, LOW);
+#endif
+    pinMode(PUMP_RELAY_PIN, OUTPUT);
+    pumpWrite(false);
+
+    Serial.println(F("ROBOT1 CONTROLLER v3.1"));
     Serial.println(F("OK:READY"));
     lastCommandTime = millis();
 }
@@ -65,6 +98,7 @@ void loop() {
 
     updateSpeed();
     executeMovement();
+    pumpSafetyTick();          // hard auto-off no matter what the Pi is doing
     delay(10);
 }
 
@@ -99,11 +133,16 @@ void processLine(const char *line) {
             currentCommand = 'S';
             Serial.println(F("OK:STOP"));
             break;
+        case 'U':   // water pump (NOT 'W'): U1 = on, U0 = off
+            setPump(line[1] == '1');
+            break;
         case 'E':
             emergencyStop = true;
             currentCommand = 'S';
             currentSpeed = 0;
             hardBrake();
+            if (pumpOn) { pumpOn = false; pumpWrite(false);
+                          pumpCooldownUntil = millis() + PUMP_COOLDOWN_MS; }
             Serial.println(F("OK:ESTOP"));
             break;
         case 'X':
@@ -185,4 +224,40 @@ void hardBrake() {
     analogWrite(RR_PWM, 255); analogWrite(RL_PWM, 255);
     delay(100);                              // brief brake pulse is intended
     stopAllMotors();
+}
+
+// ── Water pump (v3.1) ───────────────────────────────────────────────────
+void pumpWrite(bool on) {
+#if RELAY_ACTIVE_LOW
+    digitalWrite(PUMP_RELAY_PIN, on ? LOW : HIGH);
+#else
+    digitalWrite(PUMP_RELAY_PIN, on ? HIGH : LOW);
+#endif
+}
+
+void setPump(bool on) {
+    unsigned long now = millis();
+    if (on) {
+        if (emergencyStop)           { Serial.println(F("ERR:ESTOP"));         return; }
+        if (now < pumpCooldownUntil) { Serial.println(F("ERR:PUMP_COOLDOWN")); return; }
+        pumpOn = true;
+        pumpOnSince = now;
+        pumpWrite(true);
+        Serial.println(F("OK:PUMP=ON"));
+    } else {
+        if (pumpOn) pumpCooldownUntil = now + PUMP_COOLDOWN_MS;
+        pumpOn = false;
+        pumpWrite(false);
+        Serial.println(F("OK:PUMP=OFF"));
+    }
+}
+
+// Hard auto-off after PUMP_MAX_RUN_MS — fires even if the Pi/console dies.
+void pumpSafetyTick() {
+    if (pumpOn && millis() - pumpOnSince >= PUMP_MAX_RUN_MS) {
+        pumpOn = false;
+        pumpWrite(false);
+        pumpCooldownUntil = millis() + PUMP_COOLDOWN_MS;
+        Serial.println(F("WARN:PUMP_MAX_RUN - auto off"));
+    }
 }

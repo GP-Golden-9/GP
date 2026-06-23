@@ -137,6 +137,14 @@ class MissionExecutor(QObject):
     def remaining(self) -> list[tuple[float, float]]:
         return self._wps[self._idx:] if self.active and self._idx >= 0 else []
 
+    def active_waypoint(self) -> tuple[float, float] | None:
+        """The waypoint currently being driven to (world frame), or None. Used
+        to RE-ISSUE the goal to a CMD_GOAL robot (Alpha) after a paused assist —
+        its goto was pinned to a hold-pose while paused and must be re-sent."""
+        if self.active and 0 <= self._idx < len(self._wps):
+            return self._wps[self._idx]
+        return None
+
     # ── internals ─────────────────────────────────────────────────────────
     def _advance(self) -> None:
         self._idx += 1

@@ -111,7 +111,7 @@ class OpsPanel(QWidget):
         self.tools_box = QGroupBox('INTERVENTION TOOLS')
         tl = QGridLayout(self.tools_box)
         tl.setSpacing(7)
-        self.pump_btn = QPushButton('PUMP — HOLD TO SPRAY · MAX 5 s')
+        self.pump_btn = QPushButton('PUMP — HOLD TO SPRAY · MAX 10 s')
         self.pump_btn.setFocusPolicy(Qt.NoFocus)
         self.pump_btn.setMinimumHeight(40)
         self.pump_btn.setStyleSheet(
@@ -120,9 +120,9 @@ class OpsPanel(QWidget):
         self.pump_btn.pressed.connect(lambda: self._pump(True))
         self.pump_btn.released.connect(lambda: self._pump(False))
         tl.addWidget(self.pump_btn, 0, 0, 1, 3)
-        cap = QLabel('ARM')
-        cap.setStyleSheet(f'color:{theme.MUTED}; font-size:9px; font-weight:700;')
-        tl.addWidget(cap, 1, 0)
+        self.servo_cap = QLabel('ARM')
+        self.servo_cap.setStyleSheet(f'color:{theme.MUTED}; font-size:9px; font-weight:700;')
+        tl.addWidget(self.servo_cap, 1, 0)
         self.servo_slider = QSlider(Qt.Horizontal)
         self.servo_slider.setFocusPolicy(Qt.NoFocus)
         self.servo_slider.setRange(10, 170)
@@ -195,10 +195,17 @@ class OpsPanel(QWidget):
         root.addWidget(self.estop_btn)
 
     # ── public API ────────────────────────────────────────────────────────
-    def set_target(self, name: str, robot_id: str, has_tools: bool,
-                   has_gas: bool = False, has_ultra: bool = False) -> None:
+    def set_target(self, name: str, robot_id: str, has_pump: bool = False,
+                   has_servo: bool = False, has_gas: bool = False,
+                   has_ultra: bool = False) -> None:
         self.target_lbl.setText(f'{name} · {robot_id}')
-        self.tools_box.setVisible(has_tools)
+        # Pump lives on Alpha (robot1), the arm servo on Beta (robot2) — show
+        # each tool only for the robot that has it.
+        self.pump_btn.setVisible(has_pump)
+        self.servo_cap.setVisible(has_servo)
+        self.servo_slider.setVisible(has_servo)
+        self.servo_lbl.setVisible(has_servo)
+        self.tools_box.setVisible(has_pump or has_servo)
         self.gas_box.setVisible(has_gas)
         self.prox_box.setVisible(has_ultra)
 

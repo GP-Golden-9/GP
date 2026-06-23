@@ -144,6 +144,7 @@ class GatewayNode(Node):
         s(cmds.CMD_ESTOP, self._h_estop)
         s(cmds.CMD_PUMP, self._h_pump)
         s(cmds.CMD_SERVO, self._h_servo)
+        s(cmds.CMD_BUZZER, self._h_buzzer)
         s(cmds.CMD_EXPLORE, self._h_explore)
         s(cmds.CMD_GOAL, self._h_goal)
         s(cmds.CMD_NAV_BIAS, self._h_nav_bias)
@@ -337,6 +338,11 @@ class GatewayNode(Node):
 
     def _h_servo(self, env):
         cmd = mc.servo(int(env.payload.get('deg', 90)))   # clamps 10–170
+        self.pub_accessory.publish(String(data=cmd))
+        return True, cmd
+
+    def _h_buzzer(self, env):
+        cmd = mc.buzzer(int(env.payload.get('n', 2)))     # 'Z<n>', clamps 1..9
         self.pub_accessory.publish(String(data=cmd))
         return True, cmd
 

@@ -13,13 +13,16 @@
 //                dead-reckoning / SLAM navigation.
 //
 //   v5 ADDITIONS (Intervention Edition):
-//     · Water pump on a 1-ch relay (U1/U0) — 5 s max-run, 1 s cooldown,
-//       forced OFF by watchdog timeout, E-stop, and at boot
+//     · 2026-06-23: WATER PUMP REMOVED from Beta — the relay + pump moved to
+//       Alpha (robot1), which now runs the go-to-fire/extinguish action. Beta
+//       keeps the arm SERVO (operator-controlled). The 'U' command is gone and
+//       the pump slot in the D: packet is now a reserved constant 0 so the
+//       packet LAYOUT (servo/estop/ultrasonic field positions) is unchanged.
 //     · Front arm servo (A<deg>) — clamped 10–170°, slew-limited 120°/s
 //     · Hardware e-stop latch (E engage / X release) like robot1 firmware
-//     · D: packet gains ,pump,servo,estop (backward compatible: old
+//     · D: packet gains ,0,servo,estop (backward compatible: old
 //       bridges index only the first 11 fields)
-//     NOTE: 'W' stays the WATCHDOG toggle (v4 legacy) — pump is 'U'.
+//     NOTE: 'W' stays the WATCHDOG toggle (v4 legacy).
 //
 //   2026-06-13 ADDITION:
 //     · TWO front HC-SR04 ultrasonics (pins 30-33), round-robin read,
@@ -59,10 +62,14 @@
 #define M4_ENCB      28
 
 // --- Intervention tools (v5) -----------------------------------------
-#define PUMP_RELAY_PIN   7      // 1-ch relay module IN
-#define RELAY_ACTIVE_LOW 1      // H/L-trigger relay: 1 = LOW switches pump ON
-                                // (check the relay's jumper before flashing!)
+//  Pump removed 2026-06-23 (relocated to robot1/Alpha). Beta keeps the servo.
 #define SERVO_PIN        5      // arm servo signal
+// Buzzer (2026-06-23): beeps on a camera detection (Z<n> command). Active
+// buzzer module — HIGH = sound. If yours is a PASSIVE buzzer, drive it with
+// tone()/noTone() in buzzerTick() instead of digitalWrite.
+#define BUZZER_PIN       34     // free digital pin
+#define BUZZ_ON_MS       120UL  // beep length
+#define BUZZ_OFF_MS      120UL  // gap between beeps
 
 // --- Front ultrasonics (2 × HC-SR04) ---------------------------------
 //  Beta's only real-time obstacle sense (no lidar). Plain GPIO on the
@@ -132,8 +139,6 @@
 #define GYRO_CALIB_SAMPLES   1000     // gyro bias calibration
 
 // --- Intervention tool safety (v5) -----------------------------------
-#define PUMP_MAX_RUN_MS      5000UL   // hard auto-off, even if Pi dies mid-spray
-#define PUMP_COOLDOWN_MS     1000UL   // minimum off-time between runs
 #define SERVO_MIN_DEG        10
 #define SERVO_MAX_DEG        170
 #define SERVO_HOME_DEG       90
@@ -192,10 +197,11 @@ bool watchdogActive = true;
 
 // Intervention tool state (v5)
 bool estopActive = false;
-bool pumpOn = false;
-unsigned long pumpOnSince = 0;
-unsigned long pumpCooldownUntil = 0;
 Servo armServo;
+// Buzzer non-blocking beep state
+int           buzzBeepsLeft = 0;     // ON phases still to do
+bool          buzzPinOn     = false; // pin currently driven HIGH
+unsigned long buzzNext      = 0;     // next toggle time (millis)
 float servoCurrent = SERVO_HOME_DEG;   // slewed position
 int   servoTarget  = SERVO_HOME_DEG;
 unsigned long lastServoTick = 0;
@@ -528,40 +534,32 @@ void emergencyStop() {
 // ║                 11b. INTERVENTION TOOLS (v5)                      ║
 // ╚═══════════════════════════════════════════════════════════════════╝
 
-void pumpWrite(bool on) {
-#if RELAY_ACTIVE_LOW
-    digitalWrite(PUMP_RELAY_PIN, on ? LOW : HIGH);
-#else
-    digitalWrite(PUMP_RELAY_PIN, on ? HIGH : LOW);
-#endif
+// (pump functions removed 2026-06-23 — relay relocated to robot1/Alpha)
+
+// Buzzer: start a non-blocking train of n beeps (clamped 1..9).
+void buzzStart(int n) {
+    if (n < 1) n = 1;
+    if (n > 9) n = 9;
+    buzzBeepsLeft = n;
+    buzzPinOn = true;
+    digitalWrite(BUZZER_PIN, HIGH);
+    buzzNext = millis() + BUZZ_ON_MS;
 }
 
-// Returns true if the pump state was changed; reason left on Serial by caller
-bool setPump(bool on) {
+// Called every loop(): service the beep train without blocking the 50 Hz loop.
+void buzzerTick() {
+    if (buzzBeepsLeft <= 0 && !buzzPinOn) return;
     unsigned long now = millis();
-    if (on) {
-        if (estopActive)               { Serial.println(F("ERR:ESTOP"));         return false; }
-        if (now < pumpCooldownUntil)   { Serial.println(F("ERR:PUMP_COOLDOWN")); return false; }
-        pumpOn = true;
-        pumpOnSince = now;
-        pumpWrite(true);
-        Serial.println(F("OK:PUMP=ON"));
-    } else {
-        if (pumpOn) pumpCooldownUntil = now + PUMP_COOLDOWN_MS;
-        pumpOn = false;
-        pumpWrite(false);
-        Serial.println(F("OK:PUMP=OFF"));
-    }
-    return true;
-}
-
-// Called every loop(): hard auto-off no matter what the Pi is doing.
-void pumpSafetyTick() {
-    if (pumpOn && millis() - pumpOnSince >= PUMP_MAX_RUN_MS) {
-        pumpOn = false;
-        pumpWrite(false);
-        pumpCooldownUntil = millis() + PUMP_COOLDOWN_MS;
-        Serial.println(F("WARN:PUMP_MAX_RUN — auto off"));
+    if (now < buzzNext) return;
+    if (buzzPinOn) {                       // end of an ON phase
+        digitalWrite(BUZZER_PIN, LOW);
+        buzzPinOn = false;
+        buzzBeepsLeft--;
+        buzzNext = now + BUZZ_OFF_MS;
+    } else if (buzzBeepsLeft > 0) {        // start the next beep
+        digitalWrite(BUZZER_PIN, HIGH);
+        buzzPinOn = true;
+        buzzNext = now + BUZZ_ON_MS;
     }
 }
 
@@ -636,8 +634,8 @@ void printHelp() {
     Serial.println(F("   S             Stop"));
     Serial.println(F("   T<l>,<r>      Tank drive (-255..255 each)"));
     Serial.println(F(" Intervention (v5):"));
-    Serial.println(F("   U<0|1>        Water pump off / on (5s max, 1s cooldown)"));
     Serial.println(F("   A<deg>        Arm servo angle (10-170, slew 120deg/s)"));
+    Serial.println(F("   N<n>          Buzzer: beep n times (default 2)"));
     Serial.println(F("   E / X         E-stop engage / release"));
     Serial.println(F(" Configuration:"));
     Serial.println(F("   P<0-255>      Set PWM speed"));
@@ -734,10 +732,6 @@ void processLine(String input) {
         case 'R': drive( pwmSpeed, -pwmSpeed); Serial.println(F("OK:RIGHT"));    break;
         case 'S': drive(0, 0);                 Serial.println(F("OK:STOP"));     break;
 
-        case 'U':   // water pump (NOT 'W' — that toggles the watchdog)
-            setPump(input.substring(1).toInt() != 0);
-            break;
-
         case 'A': { // arm servo angle, clamped + slew-limited
             int deg = constrain((int)input.substring(1).toInt(),
                                 SERVO_MIN_DEG, SERVO_MAX_DEG);
@@ -746,11 +740,16 @@ void processLine(String input) {
             break;
         }
 
-        case 'E':   // e-stop: hard brake, latch, pump off
+        case 'N': { // buzzer notify: N<n> beeps (default 2 = "bib bib")
+            int n = input.length() > 1 ? (int)input.substring(1).toInt() : 2;
+            buzzStart(n);
+            Serial.print(F("OK:BUZZ=")); Serial.println(n);
+            break;
+        }
+
+        case 'E':   // e-stop: hard brake, latch
             estopActive = true;
             emergencyStop();
-            if (pumpOn) { pumpOn = false; pumpWrite(false);
-                          pumpCooldownUntil = millis() + PUMP_COOLDOWN_MS; }
             Serial.println(F("OK:ESTOP"));
             break;
 
@@ -825,7 +824,9 @@ void processLine(String input) {
 // ╚═══════════════════════════════════════════════════════════════════╝
 //
 //  HIGH-RATE PACKET  (50 Hz):
-//    D:ts,e1,e2,e3,e4,ax,ay,az,gx,gy,gz,mx,my,mz,pump,servo,estop,usL,usR
+//    D:ts,e1,e2,e3,e4,ax,ay,az,gx,gy,gz,mx,my,mz,0,servo,estop,usL,usR
+//    (field 15 is a reserved 0 — the pump was relocated to Alpha; the slot is
+//     kept so servo/estop/ultrasonic field positions don't shift)
 //    (usL/usR = front ultrasonic distances in cm; 150 = clear/no echo)
 //
 //  LOW-RATE PACKET   (10 Hz):
@@ -847,7 +848,7 @@ void streamHighRate() {
         ax, ay, az,
         gx, gy, gz,
         mx, my, mz,
-        pumpOn ? 1 : 0,
+        0,                   // field 15: reserved (pump relocated to Alpha)
         (int)servoCurrent,
         estopActive ? 1 : 0,
         usLeftCm,            // field 17
@@ -924,22 +925,18 @@ void setup() {
     drive(0, 0);
     Serial.println(F("[INIT] Motor driver         : OK"));
 
-    // --- Pump relay (v5): preload the OFF level BEFORE switching the pin
-    //     to OUTPUT, so an active-low relay never glitches ON at boot ---
-#if RELAY_ACTIVE_LOW
-    digitalWrite(PUMP_RELAY_PIN, HIGH);   // enables pull-up = OFF level
-#else
-    digitalWrite(PUMP_RELAY_PIN, LOW);
-#endif
-    pinMode(PUMP_RELAY_PIN, OUTPUT);
-    pumpWrite(false);
-    Serial.println(F("[INIT] Pump relay           : OK (OFF)"));
+    // (pump relay removed 2026-06-23 — relocated to robot1/Alpha)
 
     // --- Arm servo (v5) ---
     armServo.attach(SERVO_PIN);
     armServo.write(SERVO_HOME_DEG);
     servoCurrent = servoTarget = SERVO_HOME_DEG;
     Serial.println(F("[INIT] Arm servo            : OK (home 90°)"));
+
+    // --- Buzzer (camera-detection alert) ---
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW);
+    Serial.println(F("[INIT] Buzzer              : OK (OFF)"));
 
     // --- Front ultrasonics ---
     pinMode(US_L_TRIG, OUTPUT); digitalWrite(US_L_TRIG, LOW);
@@ -1030,20 +1027,18 @@ void loop() {
     // ---- 3. Service slow barometer state machine ----
     if (baroOK) baroUpdate();
 
-    // ---- 4. Watchdog: stop motors (and pump!) if no command lately ----
-    if (watchdogActive && (lastLeftCmd != 0 || lastRightCmd != 0 || pumpOn)) {
+    // ---- 4. Watchdog: stop motors if no command lately ----
+    if (watchdogActive && (lastLeftCmd != 0 || lastRightCmd != 0)) {
         if (millis() - lastCmdTime > WATCHDOG_MS) {
             drive(0, 0);
-            if (pumpOn) { pumpOn = false; pumpWrite(false);
-                          pumpCooldownUntil = millis() + PUMP_COOLDOWN_MS; }
             Serial.println(F("WARN:WATCHDOG_TIMEOUT — motors stopped"));
             lastCmdTime = millis();  // prevent message spam
         }
     }
 
     // ---- 4b. Intervention tool safety (v5) ----
-    pumpSafetyTick();
     servoSlewTick();
+    buzzerTick();
 
     // ---- 4c. Front obstacle ranging (round-robin, non-overlapping) ----
     ultrasonicTick();

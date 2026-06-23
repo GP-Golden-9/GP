@@ -1,12 +1,13 @@
-"""FIRE TEST panel — place a fire on the map, send Beta there autonomously.
+"""FIRE TEST panel — place a fire on the map, send Alpha there autonomously.
 
 Deliberately minimal (replaces the old master/slave mission):
   1. PLACE FIRE  → click the map to drop the fire point.
-  2. GO TO FIRE  → Beta plans the optimal route over Alpha's shared map and
-                   drives there, dodging unmapped obstacles with its
-                   ultrasonics (the real autonomous nav stack).
+  2. GO TO FIRE  → Alpha plans the optimal route over its shared SLAM map and
+                   drives there with its lidar goto, holds and pumps 10 s, then
+                   returns to its start (the real autonomous nav stack).
   3. STOP        → halt and disarm at any time.
-Status shows IDLE / EN ROUTE / ARRIVED / NO PATH / BLOCKED / STOPPED.
+Status shows IDLE / EN ROUTE / PUMP ON / NO PATH / BLOCKED / STOPPED.
+(SCAN AREA above still runs on Beta — it sweeps + detects the fire.)
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ class FirePanel(QWidget):
     scanStartRequested = Signal()      # CONFIRM: arm + drive the planned path
     scanCancelRequested = Signal()     # discard the planned/edited path
     placeFireRequested = Signal()      # arm: next map click drops the fire
-    goRequested = Signal()             # navigate to fire -> pump 5s -> return
+    goRequested = Signal()             # Alpha: navigate to fire -> pump 10s -> return
     stopRequested = Signal()           # stop + disarm
 
     def __init__(self, parent=None):
@@ -39,13 +40,13 @@ class FirePanel(QWidget):
         root.setContentsMargins(14, 12, 14, 14)
         root.setSpacing(12)
 
-        title = QLabel('AUTONOMY - BETA')
+        title = QLabel('AUTONOMY')
         title.setStyleSheet('font-size:15px; font-weight:800; letter-spacing:2px;')
         root.addWidget(title)
 
-        sub = QLabel('Two independent autonomous actions over Alpha\'s map. '
-                     'Beta follows the suggested path but its ultrasonics let '
-                     'it deviate around obstacles and merge back.')
+        sub = QLabel('Two autonomous actions over Alpha\'s map. SCAN: Beta sweeps '
+                     'the area and detects (ultrasonic dodging). FIRE: Alpha drives '
+                     'to the fire with its lidar and pumps 10 s, then returns.')
         sub.setWordWrap(True)
         sub.setStyleSheet(f'color:{theme.MUTED}; font-size:11px;')
         root.addWidget(sub)
@@ -108,7 +109,7 @@ class FirePanel(QWidget):
         # ── step 2: go / stop ──
         ctl = QHBoxLayout()
         ctl.setSpacing(10)
-        self.btn_go = QPushButton('2.  GO TO FIRE  ->  PUMP 5s  ->  RETURN')
+        self.btn_go = QPushButton('2.  ALPHA: GO TO FIRE  ->  PUMP 10s  ->  RETURN')
         self.btn_go.setEnabled(False)
         self.btn_go.setFocusPolicy(Qt.NoFocus)
         self.btn_go.setMinimumHeight(46)

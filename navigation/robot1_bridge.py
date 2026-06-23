@@ -43,6 +43,9 @@ class Robot1Bridge(Node):
         self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
         self.create_subscription(Twist, '/manual_cmd', self.manual_cmd_callback, 10)
         self.create_subscription(Bool, '/emergency_stop', self.estop_callback, 10)
+        # Pump (v3.1): the gateway forwards cmd.pump here as 'U1' / 'U0'. Alpha
+        # carries the water pump now (relocated from Beta).
+        self.create_subscription(String, '/accessory_cmd', self._accessory_cb, 10)
         
         # Publishers
         self.status_pub = self.create_publisher(String, '/motor_status', 10)
@@ -98,6 +101,29 @@ class Robot1Bridge(Node):
             except Exception as e:
                 self.get_logger().error(f'Serial write error: {e}')
 
+    def _send_raw(self, cmd: str):
+        """Write a command verbatim WITHOUT touching the motion last_cmd state
+        (used for the pump so it never interferes with drive keepalive)."""
+        if not self.arduino:
+            return
+        try:
+            with self._serial_lock:
+                self.arduino.write(f'{cmd}\n'.encode())
+        except Exception as e:
+            self.get_logger().error(f'Serial write error: {e}')
+
+    def _accessory_cb(self, msg: String):
+        """Forward pump commands (firmware v3.1): 'U1' / 'U0'. The pump auto-offs
+        in firmware after 10 s, so a lost console never leaves it running."""
+        cmd = msg.data.strip()
+        if self.emergency_stop and cmd != 'U0':
+            self.get_logger().warn(f'Accessory cmd {cmd!r} blocked by e-stop')
+            return
+        if not cmd or cmd[0] != 'U':
+            self.get_logger().warn(f'Unknown accessory cmd: {cmd!r}')
+            return
+        self._send_raw(cmd)
+
     def keepalive(self):
         """Re-send the active motion command while the commander is alive.
 
@@ -135,6 +161,7 @@ class Robot1Bridge(Node):
         if msg.data:
             self.emergency_stop = True
             self._send('S')
+            self._send_raw('U0')          # pump off on e-stop (v3.1)
             self.get_logger().warn('EMERGENCY STOP ACTIVATED')
         else:
             self.emergency_stop = False

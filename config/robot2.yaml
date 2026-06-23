@@ -180,11 +180,7 @@ ultrasonic:
   #   LEFT  TRIG=30 ECHO=31    RIGHT TRIG=32 ECHO=33
 
 accessories:
-  pump:
-    pin: 7               # firmware v5
-    active_low: true     # relay module is H/L trigger — verify jumper
-    max_run_ms: 5000     # firmware-enforced auto-off
-    cooldown_ms: 1000
+  # Pump relocated to robot1 (Alpha) on 2026-06-23 — Beta keeps only the servo.
   servo:
     pin: 5
     min_deg: 10
